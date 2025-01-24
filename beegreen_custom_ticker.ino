@@ -1,0 +1,167 @@
+#include <Arduino.h>
+#include <ESP8266WiFi.h>
+#include <WiFiManager.h>        // https://github.com/tzapu/WiFiManager
+#include <PubSubClient.h>       // https://pubsubclient.knolleary.net/api
+#include <INA219.h>             // https://github.com/RobTillaart/INA219
+#include <Adafruit_NeoPixel.h>  // https://github.com/adafruit/Adafruit_NeoPixel
+#include <Button2.h>
+
+//custom header
+#include "Timer.h"
+#include "objects.h"
+#include "rtc_pump_schedule.h"
+
+WiFiManager wm;
+WiFiManagerParameter custom_mqtt_server("server", "mqtt server", "fdafe7462f45431cbfe28e5fde0e41e0.s1.eu.hivemq.cloud", 60);
+WiFiManagerParameter custom_mqtt_port("port", "mqtt port", "8883", 6);
+WiFiManagerParameter custom_mqtt_user("mqtt_user", "Username", "buildybee", 32);
+WiFiManagerParameter custom_mqtt_pass("mqtt_user", "Password", "Buildybee123", 32);
+
+BearSSL::WiFiClientSecure espClient;
+PubSubClient mqttClient(espClient);
+INA219 ina219(INA219_ADDR);
+RTCPumpScheduler rtc;
+Button2 button;
+Adafruit_NeoPixel led(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
+LedColor ledColorPicker[2] = {LedColor::RED,LedColor::OFF};
+bool picker = false;
+State deviceState;
+
+void setupWiFi() {
+  WiFi.mode(WIFI_STA);  // explicitly set mode, esp defaults to STA+AP
+  wm.setWiFiAutoReconnect(true);
+  wm.addParameter(&custom_mqtt_server);
+  wm.addParameter(&custom_mqtt_port);
+  wm.addParameter(&custom_mqtt_user);
+  wm.addParameter(&custom_mqtt_pass);
+  wm.setConfigPortalBlocking(false);
+
+  //automatically connect using saved credentials if they exist
+  //If connection fails it starts an access point with the specified name
+  if (wm.autoConnect("AutoConnectAP")) {
+    Serial.println("connected...yeey :)");
+    deviceState.radioStatus = ConnectivityStatus::LOCALCONNECTED;
+  } else {
+    Serial.println("Configportal running");
+    deviceState.radioStatus = ConnectivityStatus::LOCALNOTCONNECTED;
+  }
+}
+
+void mqttCallback(char *topic, byte *payload, unsigned int length) {
+  Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.print("] ");
+  for (int i = 0; i < length; i++) {
+    Serial.println((char)payload[i]);
+  }
+  if (strcmp(topic, PUMP_CONTROL_TOPIC) == 0) {
+    Serial.println("MQTT triggered pump trigger");
+  } else {
+    Serial.print("Topic action not found");
+  }
+}
+
+void buttonHandler(Button2& btn) {
+    Serial.print("In Button handler Instance: ");
+    switch (btn.getType()) {
+      case double_click:
+        Serial.println("Double click");
+
+        break;
+      case long_click:
+        Serial.println("Long click function found");
+        // wm.resetSettings();
+        break;
+    }
+}
+
+void ping() {
+  if (mqttClient.connected()) {
+    mqttClient.publish(HEARBEAT_TOPIC, "1");
+  }
+}
+
+void setLedColor() {
+  if (deviceState.pumpRunning){
+     ledColorPicker[0] = LedColor::BLUE;
+     ledColorPicker[1] = LedColor::BLUE;
+     return;
+  }
+  switch (deviceState.radioStatus) {
+    case ConnectivityStatus::SERVERCONNECTED:
+      ledColorPicker[0] = LedColor::GREEN;
+      ledColorPicker[1] = LedColor::GREEN;
+      break;
+    case (ConnectivityStatus::LOCALNOTCONNECTED):
+      ledColorPicker[0] = LedColor::RED;
+      ledColorPicker[1] = LedColor::OFF;
+      break;
+    default:
+      ledColorPicker[0] = LedColor::RED;
+      ledColorPicker[1] = LedColor::RED;
+      break;
+  }
+  if (deviceState.waterTankEmpty) {
+    ledColorPicker[1] = LedColor::BLUE;
+  }
+}
+
+void triggerLed() {
+  picker = !picker;
+  led.setPixelColor(0,ledColorPicker[int(picker)]);
+  led.show();
+}
+
+Timer heartBeat;
+Timer ledColor;
+Timer updateLed;
+
+void setup() {
+    Serial.begin(115200);
+    Wire.begin(SDA_PIN, SCL_PIN);
+
+    pinMode(LED_PIN, OUTPUT);
+    led.begin();
+    led.clear();
+    
+    pinMode(MOSFET_PIN, OUTPUT);
+    digitalWrite(MOSFET_PIN, LOW); // Turn off LED initially
+    
+    button.begin(BUTTON_PIN,INPUT,false);
+    button.setDoubleClickTime(500);
+    button.setLongClickTime(3000);
+    button.setLongClickDetectedHandler(buttonHandler);  // this will only be called upon detection
+    button.setDoubleClickHandler(buttonHandler);
+
+    espClient.setInsecure();
+    setupWiFi();
+    delay(100);
+    mqttClient.setServer(custom_mqtt_server.getValue(), 8883);
+    mqttClient.setCallback(mqttCallback);
+    delay(100);
+
+    heartBeat.create(&ping,5000);
+    ledColor.create(&setLedColor, 1000);
+    updateLed.create(&triggerLed,500);
+
+    heartBeat.start();
+    ledColor.start();
+    updateLed.start();
+}
+
+void loop() {
+  wm.process();
+  button.loop();
+  if (WiFi.status() == WL_CONNECTED){
+    deviceState.radioStatus = ConnectivityStatus::LOCALCONNECTED;
+    if (mqttClient.connected()) {
+      deviceState.radioStatus = ConnectivityStatus::SERVERCONNECTED;
+      mqttClient.loop();
+    } else {
+      Serial.println("reconnect mqtt");
+      if (!mqttClient.connect("beegreen", custom_mqtt_user.getValue(), custom_mqtt_pass.getValue())) {
+        deviceState.radioStatus = ConnectivityStatus::SERVERNOTCONNECTED;
+      }
+    }
+  } else {deviceState.radioStatus = ConnectivityStatus::LOCALNOTCONNECTED;}
+}
