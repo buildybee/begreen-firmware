@@ -4,10 +4,10 @@
 // mqtt topics
 #define LED_TOPIC "beegreen/status"
 #define SENSOR_TOPIC "beegreen/sensor"
-#define PUMP_CONTROL_TOPIC "beegreen/pump"
+#define PUMP_CONTROL_TOPIC "beegreen/pump_trigger"
 #define HEARBEAT_TOPIC "beegreen/heartbeat"
-#define SET_SCHEDULE "beegreen/schedule"
-
+#define SET_SCHEDULE "beegreen/set_schedule"
+#define PUMP_STATUS_TOPIC "beegreen/pump_status"
 // I2C Pins
 #define SDA_PIN 5
 #define SCL_PIN 4

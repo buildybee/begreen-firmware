@@ -9,7 +9,7 @@
 //custom header
 #include "Timer.h"
 #include "objects.h"
-#include "rtc_pump_schedule.h"
+#include "MCP7940_Scheduler.h"
 
 WiFiManager wm;
 WiFiManagerParameter custom_mqtt_server("server", "mqtt server", "fdafe7462f45431cbfe28e5fde0e41e0.s1.eu.hivemq.cloud", 60);
@@ -19,8 +19,8 @@ WiFiManagerParameter custom_mqtt_pass("mqtt_user", "Password", "Buildybee123", 3
 
 BearSSL::WiFiClientSecure espClient;
 PubSubClient mqttClient(espClient);
+MCP7940Scheduler rtc;
 INA219 ina219(INA219_ADDR);
-RTCPumpScheduler rtc;
 Button2 button;
 Adafruit_NeoPixel led(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 LedColor ledColorPicker[2] = {LedColor::RED,LedColor::OFF};
@@ -111,8 +111,17 @@ void buttonHandler(Button2& btn) {
 }
 
 void publishMsg(const char *topic, const char *payload){
-  if(mqttClient.connected()) {
-    mqttClient.publish(topic, payload);
+ if (mqttClient.connected()) {
+    String jsonPayload = "{";
+    jsonPayload += "\"payload\":\"";
+    jsonPayload += payload;
+    jsonPayload += "\",";
+    jsonPayload += "\"timestamp\":\"";
+    jsonPayload += rtc.getCurrentTimestamp();
+    jsonPayload += "\"";
+    jsonPayload += "}";
+
+    mqttClient.publish(topic, jsonPayload.c_str()); // Publish the JSON payload
   }
 }
 
@@ -122,12 +131,10 @@ void pumpStart(){
     Serial.println("Starting pump");
     digitalWrite(MOSFET_PIN, HIGH);
     deviceState.pumpRunning = true;
-    publishMsg(LED_TOPIC, "Pump ON");
+    publishMsg(PUMP_STATUS_TOPIC, "on");
     return;
   } 
   Serial.println("Pump already in running state");
-  
-  
 }
 
 void pumpStop(){
@@ -137,7 +144,7 @@ void pumpStop(){
     Serial.println("Stopping pump");
     digitalWrite(MOSFET_PIN, LOW);
     deviceState.pumpRunning = false;
-    publishMsg(LED_TOPIC, "Pump OFF");
+    publishMsg(PUMP_STATUS_TOPIC, "off");
     return;
   }
   Serial.println("Pump already in idle state");
@@ -212,6 +219,8 @@ void setup() {
     mqttClient.setServer(custom_mqtt_server.getValue(), 8883);
     mqttClient.setCallback(mqttCallback);
     delay(100);
+
+    rtc.begin();
 
     heartBeat.start();
     setLedColor.start();
