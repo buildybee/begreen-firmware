@@ -24,6 +24,9 @@
 #define PING_INTERVAL 6000
 #define INA219_ADDR 0x40
 
+#define DEBOUNCE_DELAY 20        // Debounce delay in milliseconds
+#define DOUBLE_CLICK_WINDOW 500  // Maximum time between clicks for a double-click in milliseconds
+#define LONG_CLICK_WINDOW 2500
 
 enum ConnectivityStatus {
   LOCALCONNECTED,

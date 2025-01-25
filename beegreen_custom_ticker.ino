@@ -26,6 +26,39 @@ Adafruit_NeoPixel led(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 LedColor ledColorPicker[2] = {LedColor::RED,LedColor::OFF};
 bool picker = false;
 State deviceState;
+bool pumpOnTrigger = false;
+bool pumpOffTrigger = false;
+volatile bool buttonPressed = false;
+volatile unsigned long lastPressTime = 0; // Timestamp of the last button press
+volatile bool doubleClickDetected = false;
+
+// ISR for button press
+void IRAM_ATTR buttonISR() {
+  static unsigned long lastISRTime = 0;
+  unsigned long currentISRTime = millis();
+
+  // Debounce logic
+  if ((currentISRTime - lastISRTime) > DEBOUNCE_DELAY) {
+    if ((currentISRTime - lastPressTime) <= DOUBLE_CLICK_WINDOW) {
+      doubleClickDetected = true;  // Double click detected
+    } else {
+      doubleClickDetected = false; // Reset double click detection
+    }
+    lastPressTime = currentISRTime;
+    buttonPressed = true;
+  }
+  lastISRTime = currentISRTime;
+}
+
+// Function to process button events
+void handleButtonPress() {
+  if (doubleClickDetected) {
+    Serial.println("Double-click detected");
+    pumpOffTrigger = true;
+    doubleClickDetected = false;
+  }
+  buttonPressed = false;
+}
 
 void setupWiFi() {
   WiFi.mode(WIFI_STA);  // explicitly set mode, esp defaults to STA+AP
@@ -55,7 +88,9 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
     Serial.println((char)payload[i]);
   }
   if (strcmp(topic, PUMP_CONTROL_TOPIC) == 0) {
-    Serial.println("MQTT triggered pump trigger");
+   if (atoi((char *)payload)==1){
+    pumpOnTrigger = true;
+   } else {pumpOffTrigger = true;}
   } else {
     Serial.print("Topic action not found");
   }
@@ -66,55 +101,92 @@ void buttonHandler(Button2& btn) {
     switch (btn.getType()) {
       case double_click:
         Serial.println("Double click");
-
+        pumpOffTrigger = true;
         break;
       case long_click:
-        Serial.println("Long click function found");
-        // wm.resetSettings();
+        Serial.println("Long click");
+        pumpOnTrigger = !deviceState.pumpRunning;
         break;
     }
 }
 
-void ping() {
-  if (mqttClient.connected()) {
-    mqttClient.publish(HEARBEAT_TOPIC, "1");
+void publishMsg(const char *topic, const char *payload){
+  if(mqttClient.connected()) {
+    mqttClient.publish(topic, payload);
   }
 }
 
-void setLedColor() {
+void pumpStart(){
+  pumpOnTrigger = false;
+  if (!digitalRead(MOSFET_PIN)) {
+    Serial.println("Starting pump");
+    digitalWrite(MOSFET_PIN, HIGH);
+    deviceState.pumpRunning = true;
+    publishMsg(LED_TOPIC, "Pump ON");
+    return;
+  } 
+  Serial.println("Pump already in running state");
+  
+  
+}
+
+void pumpStop(){
+  pumpOnTrigger = false;
+  pumpOffTrigger = false;
+  if (digitalRead(MOSFET_PIN)) {
+    Serial.println("Stopping pump");
+    digitalWrite(MOSFET_PIN, LOW);
+    deviceState.pumpRunning = false;
+    publishMsg(LED_TOPIC, "Pump OFF");
+    return;
+  }
+  Serial.println("Pump already in idle state");
+}
+
+
+
+Timer heartBeat(5000,Timer::SCHEDULER,[]() {
+    if (mqttClient.connected()) {
+    mqttClient.publish(HEARBEAT_TOPIC, "1");
+  }
+});
+
+Timer setLedColor(500,Timer::SCHEDULER,[](){
   if (deviceState.pumpRunning){
      ledColorPicker[0] = LedColor::BLUE;
      ledColorPicker[1] = LedColor::BLUE;
-     return;
-  }
-  switch (deviceState.radioStatus) {
-    case ConnectivityStatus::SERVERCONNECTED:
-      ledColorPicker[0] = LedColor::GREEN;
-      ledColorPicker[1] = LedColor::GREEN;
-      break;
-    case (ConnectivityStatus::LOCALNOTCONNECTED):
-      ledColorPicker[0] = LedColor::RED;
-      ledColorPicker[1] = LedColor::OFF;
-      break;
-    default:
-      ledColorPicker[0] = LedColor::RED;
-      ledColorPicker[1] = LedColor::RED;
-      break;
+  } else {
+    switch (deviceState.radioStatus) {
+      case ConnectivityStatus::SERVERCONNECTED:
+        ledColorPicker[0] = LedColor::GREEN;
+        ledColorPicker[1] = LedColor::GREEN;
+        break;
+      case (ConnectivityStatus::LOCALNOTCONNECTED):
+        ledColorPicker[0] = LedColor::RED;
+        ledColorPicker[1] = LedColor::OFF;
+        break;
+      default:
+        ledColorPicker[0] = LedColor::RED;
+        ledColorPicker[1] = LedColor::RED;
+        break;
+    }
   }
   if (deviceState.waterTankEmpty) {
     ledColorPicker[1] = LedColor::BLUE;
   }
-}
 
-void triggerLed() {
   picker = !picker;
   led.setPixelColor(0,ledColorPicker[int(picker)]);
   led.show();
-}
+});
 
-Timer heartBeat;
-Timer ledColor;
-Timer updateLed;
+Timer watering(500,Timer::SCHEDULER,[](){
+  if (pumpOffTrigger) {
+    pumpStop();
+  } else if (pumpOnTrigger) {
+    pumpStart();
+  }
+});
 
 void setup() {
     Serial.begin(115200);
@@ -125,13 +197,14 @@ void setup() {
     led.clear();
     
     pinMode(MOSFET_PIN, OUTPUT);
-    digitalWrite(MOSFET_PIN, LOW); // Turn off LED initially
+    digitalWrite(MOSFET_PIN, LOW); // Turn off mosfet
     
     button.begin(BUTTON_PIN,INPUT,false);
-    button.setDoubleClickTime(500);
-    button.setLongClickTime(3000);
+    button.setDebounceTime(DEBOUNCE_DELAY);
+    button.setLongClickTime(LONG_CLICK_WINDOW);
     button.setLongClickDetectedHandler(buttonHandler);  // this will only be called upon detection
-    button.setDoubleClickHandler(buttonHandler);
+
+    attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), buttonISR, FALLING); 
 
     espClient.setInsecure();
     setupWiFi();
@@ -140,23 +213,23 @@ void setup() {
     mqttClient.setCallback(mqttCallback);
     delay(100);
 
-    heartBeat.create(&ping,5000);
-    ledColor.create(&setLedColor, 1000);
-    updateLed.create(&triggerLed,500);
-
     heartBeat.start();
-    ledColor.start();
-    updateLed.start();
+    setLedColor.start();
+    watering.start();
 }
 
 void loop() {
   wm.process();
   button.loop();
+  if (buttonPressed) {
+    handleButtonPress();
+  }
   if (WiFi.status() == WL_CONNECTED){
     deviceState.radioStatus = ConnectivityStatus::LOCALCONNECTED;
     if (mqttClient.connected()) {
       deviceState.radioStatus = ConnectivityStatus::SERVERCONNECTED;
       mqttClient.loop();
+      mqttClient.subscribe(PUMP_CONTROL_TOPIC);
     } else {
       Serial.println("reconnect mqtt");
       if (!mqttClient.connect("beegreen", custom_mqtt_user.getValue(), custom_mqtt_pass.getValue())) {
