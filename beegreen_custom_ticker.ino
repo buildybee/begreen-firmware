@@ -26,8 +26,7 @@ Adafruit_NeoPixel led(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 LedColor ledColorPicker[2] = {LedColor::RED,LedColor::OFF};
 bool picker = false;
 State deviceState;
-bool pumpOnTrigger = false;
-bool pumpOffTrigger = false;
+bool resetTrigger = false;
 volatile bool buttonPressed = false;
 volatile unsigned long lastPressTime = 0; // Timestamp of the last button press
 volatile bool doubleClickDetected = false;
@@ -54,7 +53,16 @@ void IRAM_ATTR buttonISR() {
 void handleButtonPress() {
   if (doubleClickDetected) {
     Serial.println("Double-click detected");
-    pumpOffTrigger = true;
+    if (resetTrigger){
+      // wm.resetSettings();
+      Serial.println("Reset mecahnism witheld for testing purpose, change before deploying");
+      ESP.restart();
+    }
+    if (!digitalRead(MOSFET_PIN)){
+      pumpStart();
+    } else{
+      pumpStop();
+    }
     doubleClickDetected = false;
   }
   buttonPressed = false;
@@ -84,34 +92,81 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
   Serial.print("Message arrived [");
   Serial.print(topic);
   Serial.print("] ");
-  for (int i = 0; i < length; i++) {
-    Serial.println((char)payload[i]);
-  }
+  // Create a null-terminated string from the payload
+  char payloadStr[length + 1];
+  strncpy(payloadStr, (char *)payload, length);
+  payloadStr[length] = '\0';
+  Serial.println(payloadStr);
+
   if (strcmp(topic, PUMP_CONTROL_TOPIC) == 0) {
-   if (atoi((char *)payload)==1){
-    pumpOnTrigger = true;
-   } else {pumpOffTrigger = true;}
+    if (atoi(payloadStr)==1){
+      pumpStart();
+    } else {
+      pumpStop();
+    }
+  } else if (strcmp(topic, SET_SCHEDULE) == 0) {
+    onSetScheduleCallback(payloadStr);
   } else {
     Serial.print("Topic action not found");
   }
 }
 
+// Callback for SET_SCHEDULE
+void  onSetScheduleCallback(const char* payload) {
+  WateringSchedule ws;
+  if (parseSchedulePayload(payload, ws)) {
+      if (rtc.setWateringSchedule(&ws)) {
+          Serial.println("Schedule saved successfully.");
+          if (rtc.setNextAlarm()){
+            DateTime onTrig, offTrig;
+            char buffer[20];
+            rtc.getAlarms(onTrig, offTrig);
+
+            snprintf(buffer, sizeof(buffer), "%02d-%02d %02d:%02d",
+            onTrig.day(), onTrig.month(),
+            onTrig.hour(), onTrig.minute());
+            Serial.print("PUMP ON trigger set for: ");
+            Serial.println(buffer);
+
+            snprintf(buffer, sizeof(buffer), "%02d-%02d %02d:%02d:%02d",
+            offTrig.day(), offTrig.month(),
+            offTrig.hour(), offTrig.minute(), offTrig.second());
+
+            Serial.print("PUMP OFF trigger set for: ");
+            Serial.println(buffer);
+          } else { Serial.println("Failed to set pump timer");}
+      } else {
+          Serial.println("Failed to save schedule to RAM.");
+      }
+  } else {
+      Serial.println("Invalid schedule format. Expected HH:MM:duration_sec:interval_min");
+  }
+}
+
+// Function to parse payload in the format "HH:MM:duration_sec:interval_sec" into a WateringSchedule struct
+bool parseSchedulePayload(const char* payload, WateringSchedule& ws) {
+  int parsed = sscanf(payload, "%2hhu:%2hhu:%4hu:%5hu", &ws.hour, &ws.minute, &ws.duration_sec, &ws.interval_minute);
+  if (parsed == 4) {
+      return true;
+  }
+  return false;
+}
+
 void buttonHandler(Button2& btn) {
-    Serial.print("In Button handler Instance: ");
-    switch (btn.getType()) {
-      case double_click:
-        Serial.println("Double click");
-        pumpOffTrigger = true;
-        break;
-      case long_click:
-        Serial.println("Long click");
-        pumpOnTrigger = !deviceState.pumpRunning;
-        break;
-    }
+  Serial.print("In Button handler Instance: ");
+  if (btn.getType() == long_click)
+  Serial.println("Long click");
+  resetTrigger = !resetTrigger;
+  if (resetTrigger){
+    Serial.println("Reset trigger engaged: Double click to reset");
+  } else {
+    Serial.println("Reset trigger disengaged: Restarting device");
+    ESP.restart();
+  }
 }
 
 void publishMsg(const char *topic, const char *payload){
- if (mqttClient.connected()) {
+if (mqttClient.connected()) {
     String jsonPayload = "{";
     jsonPayload += "\"payload\":\"";
     jsonPayload += payload;
@@ -126,7 +181,6 @@ void publishMsg(const char *topic, const char *payload){
 }
 
 void pumpStart(){
-  pumpOnTrigger = false;
   if (!digitalRead(MOSFET_PIN)) {
     Serial.println("Starting pump");
     digitalWrite(MOSFET_PIN, HIGH);
@@ -138,8 +192,6 @@ void pumpStart(){
 }
 
 void pumpStop(){
-  pumpOnTrigger = false;
-  pumpOffTrigger = false;
   if (digitalRead(MOSFET_PIN)) {
     Serial.println("Stopping pump");
     digitalWrite(MOSFET_PIN, LOW);
@@ -150,9 +202,7 @@ void pumpStop(){
   Serial.println("Pump already in idle state");
 }
 
-
-
-Timer heartBeat(5000,Timer::SCHEDULER,[]() {
+Timer heartBeat(60000,Timer::SCHEDULER,[]() {
     if (mqttClient.connected()) {
     mqttClient.publish(HEARBEAT_TOPIC, "1");
   }
@@ -160,8 +210,8 @@ Timer heartBeat(5000,Timer::SCHEDULER,[]() {
 
 Timer setLedColor(500,Timer::SCHEDULER,[](){
   if (deviceState.pumpRunning){
-     ledColorPicker[0] = LedColor::BLUE;
-     ledColorPicker[1] = LedColor::BLUE;
+    ledColorPicker[0] = LedColor::BLUE;
+    ledColorPicker[1] = LedColor::BLUE;
   } else {
     switch (deviceState.radioStatus) {
       case ConnectivityStatus::SERVERCONNECTED:
@@ -185,14 +235,6 @@ Timer setLedColor(500,Timer::SCHEDULER,[](){
   picker = !picker;
   led.setPixelColor(0,ledColorPicker[int(picker)]);
   led.show();
-});
-
-Timer watering(500,Timer::SCHEDULER,[](){
-  if (pumpOffTrigger) {
-    pumpStop();
-  } else if (pumpOnTrigger) {
-    pumpStart();
-  }
 });
 
 void setup() {
@@ -224,7 +266,6 @@ void setup() {
 
     heartBeat.start();
     setLedColor.start();
-    watering.start();
 }
 
 void loop() {
@@ -233,17 +274,19 @@ void loop() {
   if (buttonPressed) {
     handleButtonPress();
   }
+
   if (WiFi.status() == WL_CONNECTED){
     deviceState.radioStatus = ConnectivityStatus::LOCALCONNECTED;
-    if (mqttClient.connected()) {
+    if (!mqttClient.connected()) {
+      deviceState.radioStatus = ConnectivityStatus::SERVERNOTCONNECTED;
+      if (mqttClient.connect("beegreen", custom_mqtt_user.getValue(), custom_mqtt_pass.getValue())) {
+        mqttClient.subscribe(PUMP_CONTROL_TOPIC);
+        mqttClient.subscribe(SET_SCHEDULE);
+        deviceState.radioStatus = ConnectivityStatus::SERVERCONNECTED;
+      }
+    } else {
       deviceState.radioStatus = ConnectivityStatus::SERVERCONNECTED;
       mqttClient.loop();
-      mqttClient.subscribe(PUMP_CONTROL_TOPIC);
-    } else {
-      Serial.println("reconnect mqtt");
-      if (!mqttClient.connect("beegreen", custom_mqtt_user.getValue(), custom_mqtt_pass.getValue())) {
-        deviceState.radioStatus = ConnectivityStatus::SERVERNOTCONNECTED;
-      }
     }
   } else {deviceState.radioStatus = ConnectivityStatus::LOCALNOTCONNECTED;}
 }

@@ -8,7 +8,7 @@ WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, NTP_SERVER);
 
 MCP7940Scheduler::MCP7940Scheduler() 
-    : missedThreshold(30), timezoneOffset(5.5) {}
+    : timezoneOffset(5.5) {}
 
 void MCP7940Scheduler::begin() {
   rtc.begin();
@@ -42,54 +42,37 @@ bool MCP7940Scheduler::updateTimeFromNTP() {
         time_t ntpTime = timeClient.getEpochTime();
         if (timezoneOffset > 0) {
           rtc.adjust(DateTime(ntpTime + uint16_t(timezoneOffset * 3600)));
-        } else {
-          rtc.adjust(DateTime(ntpTime - uint16_t(timezoneOffset * 3600)));
         }
         return true;
     }
     return false;
 }
 
-bool MCP7940Scheduler::setWateringSchedule(const WateringSchedule& schedule) {
-    currentSchedule = schedule;
+bool MCP7940Scheduler::setWateringSchedule( WateringSchedule* ws) {
+    const uint8_t ramAddress = 0x00;  // Example starting address for RAM
+    return rtc.writeRAM(ramAddress, *ws);
+}
 
-    // Set the initial alarm
-    DateTime now = rtc.now();
-    DateTime alarmTime(now.year(), now.month(), now.day(),
-                       schedule.hour, schedule.minute, 0);
-
-    if (alarmTime.unixtime() <= now.unixtime()) {
-        alarmTime = alarmTime + TimeSpan(1, 0, 0, 0);  // Move to the next day
+// Get a watering schedule
+bool MCP7940Scheduler::getWateringSchedule(WateringSchedule* ws) {
+    const uint8_t ramAddress = 0; // Starting address for RAM (same as used in set_schedule)
+    if (rtc.readRAM(ramAddress, *ws) > 0) {
+        return true; // Successfully read schedule
     }
-    return setAlarm0(alarmTime);
+    return false; // Failed to read schedule
 }
 
 bool MCP7940Scheduler::alarmTriggered(ALARM alarm) {
-
-    return false;
+    switch (alarm) {
+        case ONTRIGGER:
+            return rtc.isAlarm(0);  // Check if Alarm 0 is triggered
+        case OFFTRIGGER:
+            return rtc.isAlarm(1);  // Check if Alarm 1 is triggered
+        default:
+            return false;  // Invalid alarm
+    }
 }
 
-void MCP7940Scheduler::handleAlarm() {
-
-}
-
-void MCP7940Scheduler::setMissedThreshold(uint16_t threshold) {
-    missedThreshold = threshold;
-}
-
-uint16_t MCP7940Scheduler::getMissedThreshold() {
-    return missedThreshold;
-}
-
-bool MCP7940Scheduler::saveConfiguration() {
-
-    return false;
-}
-
-bool MCP7940Scheduler::loadConfiguration() {
-
-    return false;
-}
 
 String MCP7940Scheduler::getCurrentTimestamp() {
     DateTime now = rtc.now();
@@ -100,25 +83,51 @@ String MCP7940Scheduler::getCurrentTimestamp() {
     return String(buffer);
 }
 
-uint32_t MCP7940Scheduler::calculateMissedTime() {
+bool MCP7940Scheduler::setNextAlarm() {
+    DateTime now = rtc.now();  // Get the current time
+    rtc.clearAlarm(ALARM::ONTRIGGER);         // Clear any existing alarms
+    rtc.clearAlarm(ALARM::OFFTRIGGER);        // Clear any existing alarms
+
+    WateringSchedule currentSchedule;
+    getWateringSchedule(&currentSchedule);
+
+    // Calculate the initial scheduled time
+    uint16_t startSeconds = currentSchedule.hour * 3600 + currentSchedule.minute * 60;
+    uint16_t nowSeconds = now.hour() * 3600 + now.minute() * 60 + now.second();
+
+    DateTime nextAlarmTime;
+    if (nowSeconds < startSeconds) {
+      // Schedule for later today
+      nextAlarmTime = DateTime(now.year(), now.month(), now.day(),
+                                currentSchedule.hour, currentSchedule.minute, 0);
+    } else {
+        // Schedule for tomorrow
+        nextAlarmTime = DateTime(now + TimeSpan(1, 0, 0, 0));  // Add 1 day
+        nextAlarmTime = DateTime(nextAlarmTime.year(), nextAlarmTime.month(), nextAlarmTime.day(),
+                                 currentSchedule.hour, currentSchedule.minute, 0);
+    }
     
-    return 0;
+
+    // Set Alarm 0 for the calculated next watering time
+    if (!rtc.setAlarm(ALARM::ONTRIGGER, ALARM_TYPE, nextAlarmTime, true)) {
+        Serial.println("Failed to set Alarm 0.");
+        return false;
+    }
+
+    // Set Alarm 1 for the duration after Alarm 0
+    DateTime secondAlarmTime = nextAlarmTime + TimeSpan(0, 0, currentSchedule.duration_sec / 60,
+                                                        currentSchedule.duration_sec % 60);
+    if (!rtc.setAlarm(ALARM::OFFTRIGGER, ALARM_TYPE, secondAlarmTime, true)) {
+        Serial.println("Failed to set Alarm 1.");
+        return false;
+    }
+
+    return true;
 }
 
-bool MCP7940Scheduler::setAlarm0(const DateTime& alarmTime) {
-
-    return false;
+void MCP7940Scheduler::getAlarms(DateTime &onAlarm, DateTime &offAlarm) {
+    onAlarm = rtc.getAlarm(0,ALARM_TYPE);  // Retrieve Alarm 0 time
+    offAlarm = rtc.getAlarm(1,ALARM_TYPE);  // Retrieve Alarm 1 time
 }
 
-bool MCP7940Scheduler::setAlarm1(const DateTime& alarmTime) {
 
-    return false;
-}
-
-void MCP7940Scheduler::writeToRAM(uint8_t address, const uint8_t* data, uint8_t length) {
-
-}
-
-void MCP7940Scheduler::readFromRAM(uint8_t address, uint8_t* data, uint8_t length) {
-
-}

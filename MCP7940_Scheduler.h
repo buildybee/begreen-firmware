@@ -37,47 +37,29 @@ public:
     // Update time from NTP (called at startup or once a week)
     bool updateTimeFromNTP();
 
+    // Get the current date and time as a string
+    String getCurrentTimestamp();
+
     // Set a watering schedule
-    bool setWateringSchedule(const WateringSchedule& schedule);
+    bool setWateringSchedule(WateringSchedule* ws);
+
+    // Get a watering schedule
+    bool getWateringSchedule(WateringSchedule* ws);
 
     // Check if a specific alarm is triggered
     bool alarmTriggered(ALARM alarm);
 
-    // Handle alarms: set the next interval and adjust for missed periods
-    void handleAlarm();
+    // Set next watering schedule
+    bool setNextAlarm();
 
-    // Set the missed time threshold (in seconds)
-    void setMissedThreshold(uint16_t threshold);
+    // Get the current alarms (returns both Alarm 0 and Alarm 1)
+    void getAlarms(DateTime &alarm0, DateTime &alarm1);
 
-    // Get the missed time threshold
-    uint16_t getMissedThreshold();
-
-    // Save the configuration to RTC RAM
-    bool saveConfiguration();
-
-    // Load the configuration from RTC RAM
-    bool loadConfiguration();
-
-    // Get the current date and time as a string
-    String getCurrentTimestamp();
 
 private:
-    MCP7940_Class rtc;
-    WateringSchedule currentSchedule;
-
-    uint16_t missedThreshold;  // Maximum missed time threshold in seconds
-    float timezoneOffset;     // Time zone offset in hours
-
-    // Helper to calculate the missed duration
-    uint32_t calculateMissedTime();
-
-    // Set RTC alarms
-    bool setAlarm0(const DateTime& alarmTime);
-    bool setAlarm1(const DateTime& alarmTime);
-
-    // Read and write configuration parameters to RTC RAM
-    void writeToRAM(uint8_t address, const uint8_t* data, uint8_t length);
-    void readFromRAM(uint8_t address, uint8_t* data, uint8_t length);
+  MCP7940_Class rtc;
+  float timezoneOffset;     // Time zone offset in hours
+  uint8_t ALARM_TYPE = 7;
 };
 
 #endif // MCP7940_SCHEDULER_H
