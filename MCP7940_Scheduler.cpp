@@ -83,30 +83,45 @@ String MCP7940Scheduler::getCurrentTimestamp() {
     return String(buffer);
 }
 
-bool MCP7940Scheduler::setNextAlarm() {
+bool MCP7940Scheduler::setNextAlarm(bool autoNextInetrval) {
     DateTime now = rtc.now();  // Get the current time
-    rtc.clearAlarm(ALARM::ONTRIGGER);         // Clear any existing alarms
-    rtc.clearAlarm(ALARM::OFFTRIGGER);        // Clear any existing alarms
-
     WateringSchedule currentSchedule;
     getWateringSchedule(&currentSchedule);
+    DateTime nextAlarmTime;
 
-    // Calculate the initial scheduled time
     uint16_t startSeconds = currentSchedule.hour * 3600 + currentSchedule.minute * 60;
     uint16_t nowSeconds = now.hour() * 3600 + now.minute() * 60 + now.second();
 
-    DateTime nextAlarmTime;
-    if (nowSeconds < startSeconds) {
-      // Schedule for later today
-      nextAlarmTime = DateTime(now.year(), now.month(), now.day(),
-                                currentSchedule.hour, currentSchedule.minute, 0);
+    if (autoNextInetrval) {
+        // Calculate the next alarm based on the interval
+        uint16_t intervalSeconds = currentSchedule.interval_minute * 60;
+        uint16_t elapsedSinceStart = nowSeconds - startSeconds;
+
+        if (elapsedSinceStart < intervalSeconds) {
+            // Schedule the next alarm today within the interval
+            nextAlarmTime = now + TimeSpan(0, 0, (intervalSeconds - elapsedSinceStart) / 60,
+                                           (intervalSeconds - elapsedSinceStart) % 60);
+        } else {
+            // Schedule the next alarm at the interval boundary
+            uint16_t remainingSeconds = intervalSeconds - (elapsedSinceStart % intervalSeconds);
+            nextAlarmTime = now + TimeSpan(0, 0, remainingSeconds / 60, remainingSeconds % 60);
+        }
     } else {
-        // Schedule for tomorrow
-        nextAlarmTime = DateTime(now + TimeSpan(1, 0, 0, 0));  // Add 1 day
-        nextAlarmTime = DateTime(nextAlarmTime.year(), nextAlarmTime.month(), nextAlarmTime.day(),
-                                 currentSchedule.hour, currentSchedule.minute, 0);
+        // Calculate the initial scheduled time
+        if (nowSeconds < startSeconds) {
+            // Schedule for later today
+            nextAlarmTime = DateTime(now.year(), now.month(), now.day(),
+                                      currentSchedule.hour, currentSchedule.minute, 0);
+        } else {
+            // Schedule for tomorrow
+            nextAlarmTime = DateTime(now + TimeSpan(1, 0, 0, 0));  // Add 1 day
+            nextAlarmTime = DateTime(nextAlarmTime.year(), nextAlarmTime.month(), nextAlarmTime.day(),
+                                      currentSchedule.hour, currentSchedule.minute, 0);
+        }
     }
-    
+
+    rtc.clearAlarm(ALARM::ONTRIGGER);         // Clear any existing alarms
+    rtc.clearAlarm(ALARM::OFFTRIGGER);        // Clear any existing alarms
 
     // Set Alarm 0 for the calculated next watering time
     if (!rtc.setAlarm(ALARM::ONTRIGGER, ALARM_TYPE, nextAlarmTime, true)) {
@@ -124,6 +139,7 @@ bool MCP7940Scheduler::setNextAlarm() {
 
     return true;
 }
+
 
 void MCP7940Scheduler::getAlarms(DateTime &onAlarm, DateTime &offAlarm) {
     onAlarm = rtc.getAlarm(0,ALARM_TYPE);  // Retrieve Alarm 0 time

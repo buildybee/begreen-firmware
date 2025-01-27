@@ -1,6 +1,8 @@
 #ifndef Objects_h
 #define Objects_h
 
+#define FIRMWIRE_VERSION "1.0.0"
+
 // mqtt topics
 #define LED_TOPIC "beegreen/status"
 #define SENSOR_TOPIC "beegreen/sensor"
@@ -8,6 +10,9 @@
 #define HEARBEAT_TOPIC "beegreen/heartbeat"
 #define SET_SCHEDULE "beegreen/set_schedule"
 #define PUMP_STATUS_TOPIC "beegreen/pump_status"
+#define REQUEST_NEXT_SCHEDULE "beegreen/request_schedule"
+#define GET_NEXT_SCHEDULE "beegreen/get_schedule"
+
 // I2C Pins
 #define SDA_PIN 5
 #define SCL_PIN 4
@@ -60,7 +65,5 @@ struct Hardconfig {
   uint motorCutoffThreshold = 200;
   uint aht20ReadInterval= 60;
 };
-
-
 
 #endif

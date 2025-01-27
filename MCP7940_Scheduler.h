@@ -50,7 +50,7 @@ public:
     bool alarmTriggered(ALARM alarm);
 
     // Set next watering schedule
-    bool setNextAlarm();
+    bool setNextAlarm(bool autoNextInetrval = true);
 
     // Get the current alarms (returns both Alarm 0 and Alarm 1)
     void getAlarms(DateTime &alarm0, DateTime &alarm1);

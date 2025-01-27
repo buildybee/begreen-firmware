@@ -5,6 +5,8 @@
 #include <INA219.h>             // https://github.com/RobTillaart/INA219
 #include <Adafruit_NeoPixel.h>  // https://github.com/adafruit/Adafruit_NeoPixel
 #include <Button2.h>
+#include <ESP8266HTTPClient.h>
+#include <ESP8266httpUpdate.h>
 
 //custom header
 #include "Timer.h"
@@ -27,9 +29,21 @@ LedColor ledColorPicker[2] = {LedColor::RED,LedColor::OFF};
 bool picker = false;
 State deviceState;
 bool resetTrigger = false;
+bool pendingAlarmUpdate= false;
 volatile bool buttonPressed = false;
 volatile unsigned long lastPressTime = 0; // Timestamp of the last button press
 volatile bool doubleClickDetected = false;
+
+
+void gracefullShutownprep(){
+  mqttClient.disconnect();
+  wm.disconnect();
+  pumpStop();
+  if (pendingAlarmUpdate){
+      rtc.setNextAlarm(false);
+      pendingAlarmUpdate = !pendingAlarmUpdate;
+  }
+}
 
 // ISR for button press
 void IRAM_ATTR buttonISR() {
@@ -54,6 +68,7 @@ void handleButtonPress() {
   if (doubleClickDetected) {
     Serial.println("Double-click detected");
     if (resetTrigger){
+      gracefullShutownprep();
       // wm.resetSettings();
       Serial.println("Reset mecahnism witheld for testing purpose, change before deploying");
       ESP.restart();
@@ -106,6 +121,19 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
     }
   } else if (strcmp(topic, SET_SCHEDULE) == 0) {
     onSetScheduleCallback(payloadStr);
+    if (digitalRead(MOSFET_PIN)){
+      pendingAlarmUpdate = true;
+    } else {rtc.setNextAlarm(false);}
+  } else if (strcmp(topic, REQUEST_NEXT_SCHEDULE) == 0) {
+    DateTime onAlarm,offAlarm;
+    WateringSchedule ws;
+    rtc.getWateringSchedule(&ws);
+    rtc.getAlarms(onAlarm,offAlarm);
+    char buffer[40];
+    snprintf(buffer,40,"%02d/%02d %02d:%02d,%d:%d",
+             onAlarm.day(), onAlarm.month(), onAlarm.hour(), onAlarm.minute(), 
+             ws.duration_sec,ws.interval_minute);
+    mqttClient.publish(GET_NEXT_SCHEDULE,buffer);
   } else {
     Serial.print("Topic action not found");
   }
@@ -117,24 +145,6 @@ void  onSetScheduleCallback(const char* payload) {
   if (parseSchedulePayload(payload, ws)) {
       if (rtc.setWateringSchedule(&ws)) {
           Serial.println("Schedule saved successfully.");
-          if (rtc.setNextAlarm()){
-            DateTime onTrig, offTrig;
-            char buffer[20];
-            rtc.getAlarms(onTrig, offTrig);
-
-            snprintf(buffer, sizeof(buffer), "%02d-%02d %02d:%02d",
-            onTrig.day(), onTrig.month(),
-            onTrig.hour(), onTrig.minute());
-            Serial.print("PUMP ON trigger set for: ");
-            Serial.println(buffer);
-
-            snprintf(buffer, sizeof(buffer), "%02d-%02d %02d:%02d:%02d",
-            offTrig.day(), offTrig.month(),
-            offTrig.hour(), offTrig.minute(), offTrig.second());
-
-            Serial.print("PUMP OFF trigger set for: ");
-            Serial.println(buffer);
-          } else { Serial.println("Failed to set pump timer");}
       } else {
           Serial.println("Failed to save schedule to RAM.");
       }
@@ -160,7 +170,9 @@ void buttonHandler(Button2& btn) {
   if (resetTrigger){
     Serial.println("Reset trigger engaged: Double click to reset");
   } else {
+    gracefullShutownprep();
     Serial.println("Reset trigger disengaged: Restarting device");
+    delay(1000);
     ESP.restart();
   }
 }
@@ -197,9 +209,60 @@ void pumpStop(){
     digitalWrite(MOSFET_PIN, LOW);
     deviceState.pumpRunning = false;
     publishMsg(PUMP_STATUS_TOPIC, "off");
+    if (pendingAlarmUpdate){
+      rtc.setNextAlarm(false);
+      pendingAlarmUpdate = !pendingAlarmUpdate;
+    }
     return;
   }
   Serial.println("Pump already in idle state");
+}
+
+// Define the server and paths for OTA
+const char* updateCheckURL = "http://192.168.1.12:5000/update?version=1.0.0";
+const char* firmwareDownloadURL = "http://192.168.1.12:5000/download";
+
+void checkForOTAUpdate() {
+  WiFiClient wifiClient; // Use WiFiClient or WiFiClientSecure for HTTPS
+  HTTPClient http;
+  mqttClient.disconnect();
+
+  Serial.printf("Free heap before OTA: %d bytes\n", ESP.getFreeHeap());
+  Serial.println("Checking for OTA updates...");
+
+  if (http.begin(wifiClient, updateCheckURL)) { 
+    Serial.println("Connected to update server...");
+    http.setTimeout(5000); // Set 5-second timeout
+
+    int httpCode = http.GET();
+    Serial.printf("HTTP GET Response Code: %d\n", httpCode);
+
+    if (httpCode == HTTP_CODE_OK) {
+      String payload = http.getString();
+      Serial.println("Update check payload: " + payload);
+
+      if (payload.indexOf("\"update\":true") >= 0) {
+        Serial.println("Update available. Starting OTA...");
+        t_httpUpdate_return ret = ESPhttpUpdate.update(wifiClient, firmwareDownloadURL);
+
+        if (ret == HTTP_UPDATE_OK) {
+          Serial.println("OTA Update Successful");
+        } else {
+          Serial.printf("OTA Update Failed. Error code: %d\n", ret);
+        }
+      } else {
+        Serial.println("No update available.");
+      }
+    } else {
+      Serial.printf("Failed to connect to server. HTTP code: %d\n", httpCode);
+    }
+
+    http.end();
+  } else {
+    Serial.println("Unable to connect to OTA update server.");
+  }
+
+  Serial.printf("Free heap after OTA: %d bytes\n", ESP.getFreeHeap());
 }
 
 Timer heartBeat(60000,Timer::SCHEDULER,[]() {
@@ -237,6 +300,22 @@ Timer setLedColor(500,Timer::SCHEDULER,[](){
   led.show();
 });
 
+Timer alarmHandler(1000, Timer::SCHEDULER, []() {
+  if (rtc.alarmTriggered(ALARM::ONTRIGGER) && !digitalRead(MOSFET_PIN)) {
+    Serial.println("onAlarm triggered: ");
+    pumpStart();
+  }
+
+  if (rtc.alarmTriggered(ALARM::OFFTRIGGER) && digitalRead(MOSFET_PIN)) {
+    Serial.println("offAlarm triggered: ");
+    pumpStop();
+    rtc.setNextAlarm();
+  }
+});
+
+
+
+
 void setup() {
     Serial.begin(115200);
     Wire.begin(SDA_PIN, SCL_PIN);
@@ -263,9 +342,9 @@ void setup() {
     delay(100);
 
     rtc.begin();
-
     heartBeat.start();
     setLedColor.start();
+    alarmHandler.start();
 }
 
 void loop() {
@@ -278,15 +357,19 @@ void loop() {
   if (WiFi.status() == WL_CONNECTED){
     deviceState.radioStatus = ConnectivityStatus::LOCALCONNECTED;
     if (!mqttClient.connected()) {
-      deviceState.radioStatus = ConnectivityStatus::SERVERNOTCONNECTED;
       if (mqttClient.connect("beegreen", custom_mqtt_user.getValue(), custom_mqtt_pass.getValue())) {
         mqttClient.subscribe(PUMP_CONTROL_TOPIC);
         mqttClient.subscribe(SET_SCHEDULE);
+        mqttClient.subscribe(REQUEST_NEXT_SCHEDULE);
         deviceState.radioStatus = ConnectivityStatus::SERVERCONNECTED;
+      } else { 
+        deviceState.radioStatus = ConnectivityStatus::SERVERNOTCONNECTED;
       }
     } else {
       deviceState.radioStatus = ConnectivityStatus::SERVERCONNECTED;
       mqttClient.loop();
     }
   } else {deviceState.radioStatus = ConnectivityStatus::LOCALNOTCONNECTED;}
+
+  checkForOTAUpdate();
 }
