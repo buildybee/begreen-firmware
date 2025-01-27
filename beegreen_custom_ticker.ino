@@ -14,10 +14,10 @@
 #include "MCP7940_Scheduler.h"
 
 WiFiManager wm;
-WiFiManagerParameter custom_mqtt_server("server", "mqtt server", "fdafe7462f45431cbfe28e5fde0e41e0.s1.eu.hivemq.cloud", 60);
-WiFiManagerParameter custom_mqtt_port("port", "mqtt port", "8883", 6);
-WiFiManagerParameter custom_mqtt_user("mqtt_user", "Username", "buildybee", 32);
-WiFiManagerParameter custom_mqtt_pass("mqtt_user", "Password", "Buildybee123", 32);
+WiFiManagerParameter custom_mqtt_server("server", "mqtt server", 60);
+WiFiManagerParameter custom_mqtt_port("port", "mqtt port", 6);
+WiFiManagerParameter custom_mqtt_user("mqtt_user", "Username", 32);
+WiFiManagerParameter custom_mqtt_pass("mqtt_user", "Password", 32);
 
 BearSSL::WiFiClientSecure espClient;
 PubSubClient mqttClient(espClient);
