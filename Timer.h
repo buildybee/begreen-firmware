@@ -7,7 +7,6 @@ public:
     Timer(unsigned long interval, TimerType type, void (*task)()) 
         : intervalMs(interval), timerType(type), callback(task), running(false) {}
 
-    // Starts the timer
     void start() {
         if (running || !callback) return;
 
@@ -16,51 +15,38 @@ public:
         } else {
             ticker.once_ms(intervalMs, [this]() {
                 if (callback) callback();
-                stop(); // Stop automatically after execution
+                stop();
             });
         }
         running = true;
     }
 
-    // Stops the timer
     void stop() {
         if (!running) return;
         ticker.detach();
         running = false;
     }
 
-    // Restarts the timer with the same configuration
     void restart() {
         stop();
         start();
     }
 
-    // Sets the timer type
     void setType(TimerType type) {
         timerType = type;
-        if (running) restart(); // Apply the new type immediately
+        if (running) restart();
     }
 
-    // Gets the current timer type
-    TimerType getType() const {
-        return timerType;
-    }
+    TimerType getType() const { return timerType; }
 
-    // Updates the timer interval
     void setInterval(unsigned long interval) {
         intervalMs = interval;
-        if (running) restart(); // Apply the new interval immediately
+        if (running) restart();
     }
 
-    // Gets the current timer interval
-    unsigned long getInterval() const {
-        return intervalMs;
-    }
+    unsigned long getInterval() const { return intervalMs; }
 
-    // Checks if the timer is running
-    bool isRunning() const {
-        return running;
-    }
+    bool isRunning() const { return running; }
 
 private:
     Ticker ticker;

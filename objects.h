@@ -1,7 +1,13 @@
 #ifndef Objects_h
 #define Objects_h
 
-#define FIRMWIRE_VERSION "1.0.0"
+#define PRODUCT_ID "esp7ina219"
+#define FIRMWARE_VERSION "1.1.0"
+
+// Define the server and paths for OTA
+#define UPDATEURL "https://raw.githubusercontent.com/buildybee/beegreen-firmware-upgrade/refs/heads/main/esp7ina219.txt"
+#define FIRMWAREDOWNLOAD "https://raw.githubusercontent.com/buildybee/beegreen-firmware-upgrade/refs/heads/main/firmware/esp7ina219/"
+
 
 // mqtt topics
 #define LED_TOPIC "beegreen/status"
@@ -12,6 +18,13 @@
 #define PUMP_STATUS_TOPIC "beegreen/pump_status"
 #define REQUEST_NEXT_SCHEDULE "beegreen/request_schedule"
 #define GET_NEXT_SCHEDULE "beegreen/get_schedule"
+#define GET_UPDATE_REQUEST "beegreen/firmware_upgrade"
+
+#define EEPROM_SIZE 108
+#define ADDR_MQTT_SERVER 0
+#define ADDR_MQTT_PORT 40
+#define ADDR_MQTT_USER 44
+#define ADDR_MQTT_PASS 76
 
 // I2C Pins
 #define SDA_PIN 5
@@ -29,7 +42,7 @@
 #define PING_INTERVAL 6000
 #define INA219_ADDR 0x40
 
-#define DEBOUNCE_DELAY 20        // Debounce delay in milliseconds
+#define DEBOUNCE_DELAY 80        // Debounce delay in milliseconds
 #define DOUBLE_CLICK_WINDOW 500  // Maximum time between clicks for a double-click in milliseconds
 #define LONG_CLICK_WINDOW 2500
 
@@ -42,10 +55,11 @@ enum ConnectivityStatus {
 
 // Enum for RGB LED colors
 enum LedColor {
-    RED = 0xFF0000,         // Red
-    GREEN = 0x00FF00, // Green
+    RED = 0xAA4141,         // Red
+    GREEN = 0x46FF6e, // Green
     YELLOW = 0xFFFF00, // Yellow
-    BLUE = 0x0000FF, // Blue
+    BLUE = 0x0097ff, // Blue
+    MAGENTA = 0x8800FF,
     OFF = 0x000000, // Off
 };
 

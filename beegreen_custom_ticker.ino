@@ -7,17 +7,17 @@
 #include <Button2.h>
 #include <ESP8266HTTPClient.h>
 #include <ESP8266httpUpdate.h>
+#include <FS.h>                  
+#include <LittleFS.h>            // Use LittleFS instead of SPIFFS
+#include <ArduinoJson.h> 
 
 //custom header
 #include "Timer.h"
 #include "objects.h"
 #include "MCP7940_Scheduler.h"
+#include "helper.h"
 
 WiFiManager wm;
-WiFiManagerParameter custom_mqtt_server("server", "mqtt server", 60);
-WiFiManagerParameter custom_mqtt_port("port", "mqtt port", 6);
-WiFiManagerParameter custom_mqtt_user("mqtt_user", "Username", 32);
-WiFiManagerParameter custom_mqtt_pass("mqtt_user", "Password", 32);
 
 BearSSL::WiFiClientSecure espClient;
 PubSubClient mqttClient(espClient);
@@ -33,6 +33,23 @@ bool pendingAlarmUpdate= false;
 volatile bool buttonPressed = false;
 volatile unsigned long lastPressTime = 0; // Timestamp of the last button press
 volatile bool doubleClickDetected = false;
+bool mqttloop,firmwareUpdate,firmwareUpdateOngoing;
+
+
+char mqtt_server[60] = "";
+char mqtt_port[4] = "";
+char mqtt_user[32] = "";
+char mqtt_password[32] = "";
+
+// Flag for saving data
+bool shouldSaveConfig = false;
+
+// Callback notifying us of the need to save config
+void saveConfigCallback() {
+  Serial.println("Should save config");
+  shouldSaveConfig = true;
+}
+
 
 
 void gracefullShutownprep(){
@@ -43,6 +60,8 @@ void gracefullShutownprep(){
       rtc.setNextAlarm(false);
       pendingAlarmUpdate = !pendingAlarmUpdate;
   }
+  led.setPixelColor(0,LedColor::OFF);
+  led.show();
 }
 
 // ISR for button press
@@ -69,8 +88,9 @@ void handleButtonPress() {
     Serial.println("Double-click detected");
     if (resetTrigger){
       gracefullShutownprep();
-      // wm.resetSettings();
-      Serial.println("Reset mecahnism witheld for testing purpose, change before deploying");
+      wm.resetSettings();
+      LittleFS.remove("/config.json");
+      Serial.println("Reset done");
       ESP.restart();
     }
     if (!digitalRead(MOSFET_PIN)){
@@ -83,15 +103,12 @@ void handleButtonPress() {
   buttonPressed = false;
 }
 
+
 void setupWiFi() {
   WiFi.mode(WIFI_STA);  // explicitly set mode, esp defaults to STA+AP
   wm.setWiFiAutoReconnect(true);
-  wm.addParameter(&custom_mqtt_server);
-  wm.addParameter(&custom_mqtt_port);
-  wm.addParameter(&custom_mqtt_user);
-  wm.addParameter(&custom_mqtt_pass);
   wm.setConfigPortalBlocking(false);
-
+  
   //automatically connect using saved credentials if they exist
   //If connection fails it starts an access point with the specified name
   if (wm.autoConnect("AutoConnectAP")) {
@@ -134,6 +151,10 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
              onAlarm.day(), onAlarm.month(), onAlarm.hour(), onAlarm.minute(), 
              ws.duration_sec,ws.interval_minute);
     mqttClient.publish(GET_NEXT_SCHEDULE,buffer);
+  } else if (strcmp(topic, GET_UPDATE_REQUEST) == 0) {
+    if (atoi(payloadStr)==1){
+      firmwareUpdate = true;
+    }
   } else {
     Serial.print("Topic action not found");
   }
@@ -170,10 +191,7 @@ void buttonHandler(Button2& btn) {
   if (resetTrigger){
     Serial.println("Reset trigger engaged: Double click to reset");
   } else {
-    gracefullShutownprep();
-    Serial.println("Reset trigger disengaged: Restarting device");
-    delay(1000);
-    ESP.restart();
+    Serial.println("Reset trigger disengaged");
   }
 }
 
@@ -193,14 +211,14 @@ if (mqttClient.connected()) {
 }
 
 void pumpStart(){
-  if (!digitalRead(MOSFET_PIN)) {
+  if (!digitalRead(MOSFET_PIN) && (!firmwareUpdate)) {
     Serial.println("Starting pump");
     digitalWrite(MOSFET_PIN, HIGH);
     deviceState.pumpRunning = true;
     publishMsg(PUMP_STATUS_TOPIC, "on");
     return;
   } 
-  Serial.println("Pump already in running state");
+  Serial.println("Pump already in running state or upgrade in prgress");
 }
 
 void pumpStop(){
@@ -218,61 +236,87 @@ void pumpStop(){
   Serial.println("Pump already in idle state");
 }
 
-// Define the server and paths for OTA
-const char* updateCheckURL = "http://192.168.1.12:5000/update?version=1.0.0";
-const char* firmwareDownloadURL = "http://192.168.1.12:5000/download";
-
 void checkForOTAUpdate() {
-  WiFiClient wifiClient; // Use WiFiClient or WiFiClientSecure for HTTPS
   HTTPClient http;
-  mqttClient.disconnect();
-
-  Serial.printf("Free heap before OTA: %d bytes\n", ESP.getFreeHeap());
   Serial.println("Checking for OTA updates...");
 
-  if (http.begin(wifiClient, updateCheckURL)) { 
+  String updateURL = String(UPDATEURL) + "?nocache=" + String(millis()); // Force fresh request
+  if (http.begin(espClient, updateURL)) { 
     Serial.println("Connected to update server...");
     http.setTimeout(5000); // Set 5-second timeout
 
-    int httpCode = http.GET();
-    Serial.printf("HTTP GET Response Code: %d\n", httpCode);
-
+    int httpCode = http.GET(); // Perform GET request to fetch the version file
     if (httpCode == HTTP_CODE_OK) {
-      String payload = http.getString();
-      Serial.println("Update check payload: " + payload);
+      String fetchedFirmwareVersionString = http.getString(); // Store the String object
+      fetchedFirmwareVersionString.trim(); // Trim whitespace
 
-      if (payload.indexOf("\"update\":true") >= 0) {
+      Serial.println("Fetched Firmware Version: " + fetchedFirmwareVersionString);
+      Serial.println("System Firmware Version: " + String(FIRMWARE_VERSION));
+      
+
+      // Compare fetched version with current firmware version
+      if (v1GreaterThanV2(fetchedFirmwareVersionString.c_str(),FIRMWARE_VERSION)) {
+        firmwareUpdateOngoing = true;
         Serial.println("Update available. Starting OTA...");
-        t_httpUpdate_return ret = ESPhttpUpdate.update(wifiClient, firmwareDownloadURL);
+        mqttClient.disconnect(); // Ensure MQTT is disconnected during OTA
+        String firmwareURL = String(FIRMWAREDOWNLOAD)+ fetchedFirmwareVersionString + ".bin";
+        t_httpUpdate_return ret = ESPhttpUpdate.update(espClient, firmwareURL);
 
         if (ret == HTTP_UPDATE_OK) {
           Serial.println("OTA Update Successful");
+          gracefullShutownprep();
+          ESP.restart();
         } else {
           Serial.printf("OTA Update Failed. Error code: %d\n", ret);
+          firmwareUpdateOngoing = false;
         }
       } else {
         Serial.println("No update available.");
       }
     } else {
-      Serial.printf("Failed to connect to server. HTTP code: %d\n", httpCode);
+      Serial.printf("Failed to fetch update file. HTTP code: %d\n", httpCode);
     }
 
-    http.end();
+    http.end(); // End the HTTP connection
   } else {
     Serial.println("Unable to connect to OTA update server.");
   }
+  http.end();
+}
 
-  Serial.printf("Free heap after OTA: %d bytes\n", ESP.getFreeHeap());
+
+void mqtt() {
+  if (WiFi.status() == WL_CONNECTED){
+    if (!mqttClient.connected()) {
+      if (mqttClient.connect("beegreen", mqtt_user, mqtt_password)) {
+        mqttClient.subscribe(PUMP_CONTROL_TOPIC);
+        mqttClient.subscribe(SET_SCHEDULE);
+        mqttClient.subscribe(REQUEST_NEXT_SCHEDULE);
+        mqttClient.subscribe(GET_UPDATE_REQUEST);
+        deviceState.radioStatus = ConnectivityStatus::SERVERCONNECTED;
+      } else { 
+        deviceState.radioStatus = ConnectivityStatus::SERVERNOTCONNECTED;
+      }
+    } else {
+      deviceState.radioStatus = ConnectivityStatus::SERVERCONNECTED;
+    }
+  } else { 
+    deviceState.radioStatus = ConnectivityStatus::LOCALNOTCONNECTED; 
+  }
+
 }
 
 Timer heartBeat(60000,Timer::SCHEDULER,[]() {
     if (mqttClient.connected()) {
-    mqttClient.publish(HEARBEAT_TOPIC, "1");
+    mqttClient.publish(HEARBEAT_TOPIC, FIRMWARE_VERSION);
   }
 });
 
 Timer setLedColor(500,Timer::SCHEDULER,[](){
-  if (deviceState.pumpRunning){
+  if (resetTrigger || firmwareUpdateOngoing){
+    ledColorPicker[0] = LedColor::MAGENTA;
+    ledColorPicker[1] = LedColor::OFF;
+  } else if (deviceState.pumpRunning){
     ledColorPicker[0] = LedColor::BLUE;
     ledColorPicker[1] = LedColor::BLUE;
   } else {
@@ -313,11 +357,120 @@ Timer alarmHandler(1000, Timer::SCHEDULER, []() {
   }
 });
 
+Timer loopMqtt(5000,Timer::SCHEDULER,[]() {
+  mqttloop = true;
+});
 
 
 
 void setup() {
-    Serial.begin(115200);
+  firmwareUpdate = false;
+  mqttloop = true;
+  firmwareUpdateOngoing = false;
+  Serial.begin(115200);
+  
+  Serial.println();
+
+  // Mount LittleFS
+  Serial.println("Mounting FS...");
+  if (!LittleFS.begin()) {
+    Serial.println("Failed to mount FS");
+  } else {
+    Serial.println("Mounted file system");                          
+    if (LittleFS.exists("/config.json")) {  
+    Serial.println("Reading config file");
+    File configFile = LittleFS.open("/config.json", "r");
+    if (configFile) {
+        Serial.println("Opened config file");
+        Serial.print("Raw config file content: ");
+        while (configFile.available()) {
+            Serial.write(configFile.read());
+        }
+        Serial.println();
+        configFile.seek(0, SeekSet); // Reset file pointer for reading again
+        
+        size_t size = configFile.size();
+        std::unique_ptr<char[]> buf(new char[size]);
+        configFile.readBytes(buf.get(), size);
+        configFile.close();
+
+        DynamicJsonDocument json(256);
+        auto deserializeError = deserializeJson(json, buf.get());
+        if (!deserializeError) {
+            Serial.println("Parsed JSON");
+            Serial.println("mqtt_server from JSON: " + String(json["mqtt_server"]));
+            strcpy(mqtt_server, json["s"]);
+            strcpy(mqtt_port, json["p"]);
+            strcpy(mqtt_user, json["u"]);
+            strcpy(mqtt_password, json["pw"]);
+        } else {
+            Serial.println("Failed to load JSON config");
+        }
+    }
+}
+
+  }
+
+  // Set up WiFiManager parameters
+  WiFiManagerParameter custom_mqtt_server("mqtt_server", "MQTT Server", mqtt_server, 124);
+  WiFiManagerParameter custom_mqtt_port("mqtt_port", "MQTT Port", mqtt_port, 4);
+  WiFiManagerParameter custom_mqtt_username("username", "Username", mqtt_user, 32);
+  WiFiManagerParameter custom_mqtt_password("password", "Password", mqtt_password, 32);
+
+  // WiFiManager wifiManager;
+  wm.setSaveConfigCallback(saveConfigCallback);
+
+  wm.addParameter(&custom_mqtt_server);
+  wm.addParameter(&custom_mqtt_port);
+  wm.addParameter(&custom_mqtt_username);
+  wm.addParameter(&custom_mqtt_password);
+
+  if (!wm.autoConnect("AutoConnectAP")) {
+    Serial.println("Failed to connect, restarting...");
+    delay(3000);
+    ESP.restart();
+  }
+
+  Serial.println("Connected to WiFi!");
+
+  // Read updated parameters
+  strcpy(mqtt_server, custom_mqtt_server.getValue());
+  strcpy(mqtt_port, custom_mqtt_port.getValue());
+  strcpy(mqtt_user, custom_mqtt_username.getValue());
+  strcpy(mqtt_password, custom_mqtt_password.getValue());
+
+  Serial.println("Updated configuration:");
+  Serial.println("\tmqtt_server : " + String(mqtt_server));
+  Serial.println("\tmqtt_port : " + String(mqtt_port));
+  Serial.println("\tmqtt_user : " + String(mqtt_user));
+  Serial.println("\tmqtt_password: " + String(mqtt_password));
+
+  // Save configuration to LittleFS if needed
+  if (shouldSaveConfig) {
+    Serial.println("Saving config...");
+    DynamicJsonDocument json(256);
+    json["s"] = mqtt_server;
+    json["p"] = mqtt_port;
+    json["u"] = mqtt_user;
+    json["pw"] = mqtt_password;
+    Serial.print("Estimated JSON size: ");
+    Serial.println(measureJson(json));
+    File configFile = LittleFS.open("/config.json", "w");
+    if (!configFile) {
+      Serial.println("Failed to open config file for writing");
+    } else {
+      serializeJson(json, configFile);
+      configFile.close();
+      Serial.println("Config saved");
+    }
+  }
+
+  Serial.println("Local IP:");
+  Serial.println(WiFi.localIP());
+
+
+
+
     Wire.begin(SDA_PIN, SCL_PIN);
 
     pinMode(LED_PIN, OUTPUT);
@@ -337,7 +490,8 @@ void setup() {
     espClient.setInsecure();
     setupWiFi();
     delay(100);
-    mqttClient.setServer(custom_mqtt_server.getValue(), 8883);
+
+    mqttClient.setServer(mqtt_server, 8883);
     mqttClient.setCallback(mqttCallback);
     delay(100);
 
@@ -345,31 +499,26 @@ void setup() {
     heartBeat.start();
     setLedColor.start();
     alarmHandler.start();
+    loopMqtt.start();
+
 }
 
 void loop() {
   wm.process();
   button.loop();
+  mqttClient.loop();
   if (buttonPressed) {
     handleButtonPress();
   }
 
-  if (WiFi.status() == WL_CONNECTED){
-    deviceState.radioStatus = ConnectivityStatus::LOCALCONNECTED;
-    if (!mqttClient.connected()) {
-      if (mqttClient.connect("beegreen", custom_mqtt_user.getValue(), custom_mqtt_pass.getValue())) {
-        mqttClient.subscribe(PUMP_CONTROL_TOPIC);
-        mqttClient.subscribe(SET_SCHEDULE);
-        mqttClient.subscribe(REQUEST_NEXT_SCHEDULE);
-        deviceState.radioStatus = ConnectivityStatus::SERVERCONNECTED;
-      } else { 
-        deviceState.radioStatus = ConnectivityStatus::SERVERNOTCONNECTED;
-      }
-    } else {
-      deviceState.radioStatus = ConnectivityStatus::SERVERCONNECTED;
-      mqttClient.loop();
-    }
-  } else {deviceState.radioStatus = ConnectivityStatus::LOCALNOTCONNECTED;}
+  if(mqttloop) {
+    mqtt();
+    mqttloop = false;
+  }
 
-  checkForOTAUpdate();
+  if ((firmwareUpdate) && (!digitalRead(MOSFET_PIN))) {
+    checkForOTAUpdate();
+    firmwareUpdate = false;
+  }
+
 }
