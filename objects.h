@@ -20,12 +20,6 @@
 #define GET_NEXT_SCHEDULE "beegreen/get_schedule"
 #define GET_UPDATE_REQUEST "beegreen/firmware_upgrade"
 
-#define EEPROM_SIZE 108
-#define ADDR_MQTT_SERVER 0
-#define ADDR_MQTT_PORT 40
-#define ADDR_MQTT_USER 44
-#define ADDR_MQTT_PASS 76
-
 // I2C Pins
 #define SDA_PIN 5
 #define SCL_PIN 4
@@ -44,7 +38,7 @@
 
 #define DEBOUNCE_DELAY 80        // Debounce delay in milliseconds
 #define DOUBLE_CLICK_WINDOW 500  // Maximum time between clicks for a double-click in milliseconds
-#define LONG_CLICK_WINDOW 2500
+#define LONG_CLICK_WINDOW 1500
 
 enum ConnectivityStatus {
   LOCALCONNECTED,

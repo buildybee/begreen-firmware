@@ -37,7 +37,7 @@ bool mqttloop,firmwareUpdate,firmwareUpdateOngoing;
 
 
 char mqtt_server[60] = "";
-char mqtt_port[4] = "";
+uint16_t mqtt_port;
 char mqtt_user[32] = "";
 char mqtt_password[32] = "";
 
@@ -378,46 +378,49 @@ void setup() {
   } else {
     Serial.println("Mounted file system");                          
     if (LittleFS.exists("/config.json")) {  
-    Serial.println("Reading config file");
-    File configFile = LittleFS.open("/config.json", "r");
-    if (configFile) {
+      Serial.println("Reading config file");
+      File configFile = LittleFS.open("/config.json", "r");
+      if (configFile) {
         Serial.println("Opened config file");
-        Serial.print("Raw config file content: ");
-        while (configFile.available()) {
-            Serial.write(configFile.read());
-        }
-        Serial.println();
-        configFile.seek(0, SeekSet); // Reset file pointer for reading again
         
-        size_t size = configFile.size();
-        std::unique_ptr<char[]> buf(new char[size]);
-        configFile.readBytes(buf.get(), size);
-        configFile.close();
-
+        // Parse JSON
         DynamicJsonDocument json(256);
-        auto deserializeError = deserializeJson(json, buf.get());
-        if (!deserializeError) {
-            Serial.println("Parsed JSON");
-            Serial.println("mqtt_server from JSON: " + String(json["mqtt_server"]));
-            strcpy(mqtt_server, json["s"]);
-            strcpy(mqtt_port, json["p"]);
-            strcpy(mqtt_user, json["u"]);
-            strcpy(mqtt_password, json["pw"]);
-        } else {
-            Serial.println("Failed to load JSON config");
-        }
-    }
-}
+        DeserializationError error = deserializeJson(json, configFile);
+        if (!error) {
+          Serial.println("Parsed JSON");
 
+          // Assign values from JSON to variables
+          String mqttServer = json["s"].as<String>();
+          String mqttPort = json["p"].as<String>();
+          String mqttUser = json["u"].as<String>();
+          String mqttPassword = json["pw"].as<String>();
+
+          // Convert String to char[]
+          mqttServer.toCharArray(mqtt_server, sizeof(mqtt_server));
+          mqtt_port = static_cast<uint16_t>(atoi(mqttPort.c_str()));
+          mqttUser.toCharArray(mqtt_user, sizeof(mqtt_user));
+          mqttPassword.toCharArray(mqtt_password, sizeof(mqtt_password));
+
+          Serial.println("mqtt_server from JSON: " + mqttServer);
+          Serial.println("mqtt_port from JSON: " + mqttPort);
+          Serial.println("mqtt_user from JSON: " + mqttUser);
+          Serial.println("mqtt_password from JSON: " + mqttPassword);
+        } else {
+          Serial.println("Failed to parse JSON config");
+        }
+        configFile.close();
+      } else {
+        Serial.println("Failed to open config file");
+      }
+    }
   }
 
   // Set up WiFiManager parameters
-  WiFiManagerParameter custom_mqtt_server("mqtt_server", "MQTT Server", mqtt_server, 124);
-  WiFiManagerParameter custom_mqtt_port("mqtt_port", "MQTT Port", mqtt_port, 4);
-  WiFiManagerParameter custom_mqtt_username("username", "Username", mqtt_user, 32);
-  WiFiManagerParameter custom_mqtt_password("password", "Password", mqtt_password, 32);
+  WiFiManagerParameter custom_mqtt_server("mqtt_server", "MQTT Server", "", 60);
+  WiFiManagerParameter custom_mqtt_port("mqtt_port", "MQTT Port", "", 4);
+  WiFiManagerParameter custom_mqtt_username("username", "Username", "", 32);
+  WiFiManagerParameter custom_mqtt_password("password", "Password", "", 32);
 
-  // WiFiManager wifiManager;
   wm.setSaveConfigCallback(saveConfigCallback);
 
   wm.addParameter(&custom_mqtt_server);
@@ -433,28 +436,15 @@ void setup() {
 
   Serial.println("Connected to WiFi!");
 
-  // Read updated parameters
-  strcpy(mqtt_server, custom_mqtt_server.getValue());
-  strcpy(mqtt_port, custom_mqtt_port.getValue());
-  strcpy(mqtt_user, custom_mqtt_username.getValue());
-  strcpy(mqtt_password, custom_mqtt_password.getValue());
-
-  Serial.println("Updated configuration:");
-  Serial.println("\tmqtt_server : " + String(mqtt_server));
-  Serial.println("\tmqtt_port : " + String(mqtt_port));
-  Serial.println("\tmqtt_user : " + String(mqtt_user));
-  Serial.println("\tmqtt_password: " + String(mqtt_password));
-
   // Save configuration to LittleFS if needed
   if (shouldSaveConfig) {
     Serial.println("Saving config...");
     DynamicJsonDocument json(256);
-    json["s"] = mqtt_server;
-    json["p"] = mqtt_port;
-    json["u"] = mqtt_user;
-    json["pw"] = mqtt_password;
-    Serial.print("Estimated JSON size: ");
-    Serial.println(measureJson(json));
+    json["s"] = custom_mqtt_server.getValue();
+    json["p"] = custom_mqtt_port.getValue();
+    json["u"] = custom_mqtt_username.getValue();
+    json["pw"] = custom_mqtt_password.getValue();
+
     File configFile = LittleFS.open("/config.json", "w");
     if (!configFile) {
       Serial.println("Failed to open config file for writing");
@@ -462,45 +452,43 @@ void setup() {
       serializeJson(json, configFile);
       configFile.close();
       Serial.println("Config saved");
+      ESP.restart();
     }
   }
 
   Serial.println("Local IP:");
   Serial.println(WiFi.localIP());
 
+  Wire.begin(SDA_PIN, SCL_PIN);
 
+  pinMode(LED_PIN, OUTPUT);
+  led.begin();
+  led.clear();
+  
+  pinMode(MOSFET_PIN, OUTPUT);
+  digitalWrite(MOSFET_PIN, LOW); // Turn off mosfet
+  
+  button.begin(BUTTON_PIN, INPUT, false);
+  button.setDebounceTime(DEBOUNCE_DELAY);
+  button.setLongClickTime(LONG_CLICK_WINDOW);
+  button.setLongClickDetectedHandler(buttonHandler);  // this will only be called upon detection
 
+  attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), buttonISR, FALLING); 
 
-    Wire.begin(SDA_PIN, SCL_PIN);
+  espClient.setInsecure();
+  setupWiFi();
+  delay(100);
+  Serial.println("port value that wioll be entered");
+  Serial.print(mqtt_port);
+  mqttClient.setServer(mqtt_server, mqtt_port);
+  mqttClient.setCallback(mqttCallback);
+  delay(100);
 
-    pinMode(LED_PIN, OUTPUT);
-    led.begin();
-    led.clear();
-    
-    pinMode(MOSFET_PIN, OUTPUT);
-    digitalWrite(MOSFET_PIN, LOW); // Turn off mosfet
-    
-    button.begin(BUTTON_PIN,INPUT,false);
-    button.setDebounceTime(DEBOUNCE_DELAY);
-    button.setLongClickTime(LONG_CLICK_WINDOW);
-    button.setLongClickDetectedHandler(buttonHandler);  // this will only be called upon detection
-
-    attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), buttonISR, FALLING); 
-
-    espClient.setInsecure();
-    setupWiFi();
-    delay(100);
-
-    mqttClient.setServer(mqtt_server, 8883);
-    mqttClient.setCallback(mqttCallback);
-    delay(100);
-
-    rtc.begin();
-    heartBeat.start();
-    setLedColor.start();
-    alarmHandler.start();
-    loopMqtt.start();
-
+  rtc.begin();
+  heartBeat.start();
+  setLedColor.start();
+  alarmHandler.start();
+  loopMqtt.start();
 }
 
 void loop() {
