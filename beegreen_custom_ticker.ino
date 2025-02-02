@@ -6,9 +6,8 @@
 #include <Adafruit_NeoPixel.h>  // https://github.com/adafruit/Adafruit_NeoPixel
 #include <Button2.h>
 #include <ESP8266HTTPClient.h>
-#include <ESP8266httpUpdate.h>
-#include <FS.h>                  
-#include <LittleFS.h>            // Use LittleFS instead of SPIFFS
+#include <ESP8266httpUpdate.h>               
+#include <EEPROM.h>            // Use LittleFS instead of SPIFFS
 #include <ArduinoJson.h> 
 
 //custom header
@@ -16,8 +15,6 @@
 #include "objects.h"
 #include "MCP7940_Scheduler.h"
 #include "helper.h"
-
-WiFiManager wm;
 
 BearSSL::WiFiClientSecure espClient;
 PubSubClient mqttClient(espClient);
@@ -35,11 +32,8 @@ volatile unsigned long lastPressTime = 0; // Timestamp of the last button press
 volatile bool doubleClickDetected = false;
 bool mqttloop,firmwareUpdate,firmwareUpdateOngoing;
 
-
-char mqtt_server[60] = "";
-uint16_t mqtt_port;
-char mqtt_user[32] = "";
-char mqtt_password[32] = "";
+WiFiManager wm;
+MqttCredentials mqttDetails;
 
 // Flag for saving data
 bool shouldSaveConfig = false;
@@ -49,8 +43,6 @@ void saveConfigCallback() {
   Serial.println("Should save config");
   shouldSaveConfig = true;
 }
-
-
 
 void gracefullShutownprep(){
   mqttClient.disconnect();
@@ -89,7 +81,6 @@ void handleButtonPress() {
     if (resetTrigger){
       gracefullShutownprep();
       wm.resetSettings();
-      LittleFS.remove("/config.json");
       Serial.println("Reset done");
       ESP.restart();
     }
@@ -288,7 +279,7 @@ void checkForOTAUpdate() {
 void mqtt() {
   if (WiFi.status() == WL_CONNECTED){
     if (!mqttClient.connected()) {
-      if (mqttClient.connect("beegreen", mqtt_user, mqtt_password)) {
+      if (mqttClient.connect("beegreen", mqttDetails.mqtt_user, mqttDetails.mqtt_password)) {
         mqttClient.subscribe(PUMP_CONTROL_TOPIC);
         mqttClient.subscribe(SET_SCHEDULE);
         mqttClient.subscribe(REQUEST_NEXT_SCHEDULE);
@@ -361,6 +352,21 @@ Timer loopMqtt(5000,Timer::SCHEDULER,[]() {
   mqttloop = true;
 });
 
+void eeprom_read()
+{
+  EEPROM.begin(sizeof(mqttDetails) + 10);
+  EEPROM.get(10, mqttDetails);
+  EEPROM.end();
+}
+
+void eeprom_saveconfig()
+{
+  EEPROM.begin(sizeof(mqttDetails) + 10);
+  EEPROM.put(10, mqttDetails);
+  if (EEPROM.commit()){
+  EEPROM.end();
+  } else { Serial.println ("SAving failed"); }
+}
 
 
 void setup() {
@@ -370,50 +376,6 @@ void setup() {
   Serial.begin(115200);
   
   Serial.println();
-
-  // Mount LittleFS
-  Serial.println("Mounting FS...");
-  if (!LittleFS.begin()) {
-    Serial.println("Failed to mount FS");
-  } else {
-    Serial.println("Mounted file system");                          
-    if (LittleFS.exists("/config.json")) {  
-      Serial.println("Reading config file");
-      File configFile = LittleFS.open("/config.json", "r");
-      if (configFile) {
-        Serial.println("Opened config file");
-        
-        // Parse JSON
-        DynamicJsonDocument json(256);
-        DeserializationError error = deserializeJson(json, configFile);
-        if (!error) {
-          Serial.println("Parsed JSON");
-
-          // Assign values from JSON to variables
-          String mqttServer = json["s"].as<String>();
-          String mqttPort = json["p"].as<String>();
-          String mqttUser = json["u"].as<String>();
-          String mqttPassword = json["pw"].as<String>();
-
-          // Convert String to char[]
-          mqttServer.toCharArray(mqtt_server, sizeof(mqtt_server));
-          mqtt_port = static_cast<uint16_t>(atoi(mqttPort.c_str()));
-          mqttUser.toCharArray(mqtt_user, sizeof(mqtt_user));
-          mqttPassword.toCharArray(mqtt_password, sizeof(mqtt_password));
-
-          Serial.println("mqtt_server from JSON: " + mqttServer);
-          Serial.println("mqtt_port from JSON: " + mqttPort);
-          Serial.println("mqtt_user from JSON: " + mqttUser);
-          Serial.println("mqtt_password from JSON: " + mqttPassword);
-        } else {
-          Serial.println("Failed to parse JSON config");
-        }
-        configFile.close();
-      } else {
-        Serial.println("Failed to open config file");
-      }
-    }
-  }
 
   // Set up WiFiManager parameters
   WiFiManagerParameter custom_mqtt_server("mqtt_server", "MQTT Server", "", 60);
@@ -438,26 +400,40 @@ void setup() {
 
   // Save configuration to LittleFS if needed
   if (shouldSaveConfig) {
+
+    Serial.println("details that will be saved");
+    Serial.println(custom_mqtt_server.getValue());
+    Serial.println(custom_mqtt_username.getValue());
+    Serial.println(custom_mqtt_password.getValue());
+    Serial.println(custom_mqtt_port.getValue());
+    Serial.println("****");
+
+    strcpy(mqttDetails.mqtt_server,custom_mqtt_server.getValue());
+    strcpy(mqttDetails.mqtt_user,custom_mqtt_username.getValue());
+    strcpy(mqttDetails.mqtt_password,custom_mqtt_password.getValue());
+    mqttDetails.mqtt_port = static_cast<uint16_t>(atoi(custom_mqtt_port.getValue()));
+
+
+    Serial.println("Value of mqttDetails param that wiil be saved");
+    Serial.println(mqttDetails.mqtt_server);
+    Serial.println(mqttDetails.mqtt_user);
+    Serial.println(mqttDetails.mqtt_password);
+    Serial.println(mqttDetails.mqtt_port);
+    Serial.println("****");
+
     Serial.println("Saving config...");
-    DynamicJsonDocument json(256);
-    json["s"] = custom_mqtt_server.getValue();
-    json["p"] = custom_mqtt_port.getValue();
-    json["u"] = custom_mqtt_username.getValue();
-    json["pw"] = custom_mqtt_password.getValue();
-
-    File configFile = LittleFS.open("/config.json", "w");
-    if (!configFile) {
-      Serial.println("Failed to open config file for writing");
-    } else {
-      serializeJson(json, configFile);
-      configFile.close();
-      Serial.println("Config saved");
-      ESP.restart();
-    }
+    eeprom_saveconfig();
+    ESP.restart();
   }
-
+  eeprom_read();
   Serial.println("Local IP:");
   Serial.println(WiFi.localIP());
+  Serial.println("****");
+  Serial.println(mqttDetails.mqtt_server);
+  Serial.println(mqttDetails.mqtt_user);
+  Serial.println(mqttDetails.mqtt_password);
+  Serial.println(mqttDetails.mqtt_port);
+  Serial.println("****");
 
   Wire.begin(SDA_PIN, SCL_PIN);
 
@@ -478,9 +454,7 @@ void setup() {
   espClient.setInsecure();
   setupWiFi();
   delay(100);
-  Serial.println("port value that wioll be entered");
-  Serial.print(mqtt_port);
-  mqttClient.setServer(mqtt_server, mqtt_port);
+  mqttClient.setServer(mqttDetails.mqtt_server, mqttDetails.mqtt_port);
   mqttClient.setCallback(mqttCallback);
   delay(100);
 

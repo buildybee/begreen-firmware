@@ -47,6 +47,13 @@ enum ConnectivityStatus {
   SERVERNOTCONNECTED,
 };
 
+typedef struct {
+char mqtt_server[60] = "";
+uint16_t mqtt_port;
+char mqtt_user[32] = "";
+char mqtt_password[32] = "";
+} MqttCredentials;
+
 // Enum for RGB LED colors
 enum LedColor {
     RED = 0xAA4141,         // Red
