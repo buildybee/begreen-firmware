@@ -1,14 +1,13 @@
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <WiFiManager.h>        // https://github.com/tzapu/WiFiManager
-#include <PubSubClient.h>       // https://pubsubclient.knolleary.net/api
-#include <INA219.h>             // https://github.com/RobTillaart/INA219
+#include <PubSubClient.h>       // https://pubsubclient.knolleary.net/api 
 #include <Adafruit_NeoPixel.h>  // https://github.com/adafruit/Adafruit_NeoPixel
 #include <Button2.h>
 #include <ESP8266HTTPClient.h>
 #include <ESP8266httpUpdate.h>               
 #include <EEPROM.h>            // Use LittleFS instead of SPIFFS
-#include <ArduinoJson.h> 
+#include <ArduinoJson.h>
 
 //custom header
 #include "Timer.h"
@@ -19,7 +18,6 @@
 BearSSL::WiFiClientSecure espClient;
 PubSubClient mqttClient(espClient);
 MCP7940Scheduler rtc;
-INA219 ina219(INA219_ADDR);
 Button2 button;
 Adafruit_NeoPixel led(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 LedColor ledColorPicker[2] = {LedColor::RED,LedColor::OFF};
@@ -32,8 +30,16 @@ volatile unsigned long lastPressTime = 0; // Timestamp of the last button press
 volatile bool doubleClickDetected = false;
 bool mqttloop,firmwareUpdate,firmwareUpdateOngoing;
 
+
+
 WiFiManager wm;
 MqttCredentials mqttDetails;
+// Set up WiFiManager parameters
+WiFiManagerParameter custom_mqtt_server("mqtt_server", "MQTT Server", "", 60);
+WiFiManagerParameter custom_mqtt_port("mqtt_port", "MQTT Port", "", 4);
+WiFiManagerParameter custom_mqtt_username("username", "Username", "", 32);
+WiFiManagerParameter custom_mqtt_password("password", "Password", "", 32);
+
 
 // Flag for saving data
 bool shouldSaveConfig = false;
@@ -41,7 +47,22 @@ bool shouldSaveConfig = false;
 // Callback notifying us of the need to save config
 void saveConfigCallback() {
   Serial.println("Should save config");
-  shouldSaveConfig = true;
+
+  strcpy(mqttDetails.mqtt_server,custom_mqtt_server.getValue());
+  strcpy(mqttDetails.mqtt_user,custom_mqtt_username.getValue());
+  strcpy(mqttDetails.mqtt_password,custom_mqtt_password.getValue());
+  mqttDetails.mqtt_port = static_cast<uint16_t>(atoi(custom_mqtt_port.getValue()));
+
+  Serial.println("Value of mqttDetails param that wiil be saved");
+  Serial.println(mqttDetails.mqtt_server);
+  Serial.println(mqttDetails.mqtt_user);
+  Serial.println(mqttDetails.mqtt_password);
+  Serial.println(mqttDetails.mqtt_port);
+  Serial.println("****");
+
+  Serial.println("Saving config...");
+  eeprom_saveconfig();
+  ESP.restart();
 }
 
 void gracefullShutownprep(){
@@ -94,17 +115,39 @@ void handleButtonPress() {
   buttonPressed = false;
 }
 
+// Method to generate the string in the format "prefix_chipID_last4mac"
+String generateDeviceID() {
+  // Get the chip ID
+  String chipID = String(WIFI_getChipId(),HEX);
+  chipID.toUpperCase();
+  // Get the MAC address
+  String macAddress = WiFi.macAddress();
+  macAddress.replace(":", ""); // Remove colons from the MAC address
+  // Extract the last 4 characters of the MAC address
+  String last4Mac = macAddress.substring(macAddress.length() - 4);
+  // Combine the prefix, chip ID, and last 4 MAC characters
+  String deviceID = String("BeeGreen") + "_" + chipID + "_" + last4Mac;
+  return deviceID;
+}
 
 void setupWiFi() {
-  WiFi.mode(WIFI_STA);  // explicitly set mode, esp defaults to STA+AP
+  // WiFi.mode(WIFI_STA);  // explicitly set mode, esp defaults to STA+AP
   wm.setWiFiAutoReconnect(true);
   wm.setConfigPortalBlocking(false);
+  wm.addParameter(&custom_mqtt_server);
+  wm.addParameter(&custom_mqtt_port);
+  wm.addParameter(&custom_mqtt_username);
+  wm.addParameter(&custom_mqtt_password);
+  wm.setSaveConfigCallback(saveConfigCallback);
   
   //automatically connect using saved credentials if they exist
   //If connection fails it starts an access point with the specified name
-  if (wm.autoConnect("AutoConnectAP")) {
-    Serial.println("connected...yeey :)");
+
+  if (wm.autoConnect(generateDeviceID().c_str())) {
+    Serial.println("WiFi connected...yeey :)");
     deviceState.radioStatus = ConnectivityStatus::LOCALCONNECTED;
+    checkForOTAUpdate();
+    
   } else {
     Serial.println("Configportal running");
     deviceState.radioStatus = ConnectivityStatus::LOCALNOTCONNECTED;
@@ -258,7 +301,7 @@ void checkForOTAUpdate() {
           gracefullShutownprep();
           ESP.restart();
         } else {
-          Serial.printf("OTA Update Failed. Error code: %d\n", ret);
+            Serial.printf("HTTP_UPDATE_FAILED Error (%d): %s\n", ESPhttpUpdate.getLastError(), ESPhttpUpdate.getLastErrorString().c_str());
           firmwareUpdateOngoing = false;
         }
       } else {
@@ -274,7 +317,6 @@ void checkForOTAUpdate() {
   }
   http.end();
 }
-
 
 void mqtt() {
   if (WiFi.status() == WL_CONNECTED){
@@ -352,15 +394,13 @@ Timer loopMqtt(5000,Timer::SCHEDULER,[]() {
   mqttloop = true;
 });
 
-void eeprom_read()
-{
+void eeprom_read() {
   EEPROM.begin(sizeof(mqttDetails) + 10);
   EEPROM.get(10, mqttDetails);
   EEPROM.end();
 }
 
-void eeprom_saveconfig()
-{
+void eeprom_saveconfig() {
   EEPROM.begin(sizeof(mqttDetails) + 10);
   EEPROM.put(10, mqttDetails);
   if (EEPROM.commit()){
@@ -368,95 +408,58 @@ void eeprom_saveconfig()
   } else { Serial.println ("SAving failed"); }
 }
 
+void stopServices() {
+  mqttClient.disconnect();  // Disconnect MQTT
+  // WiFi.disconnect();        // Disconnect WiFi
+  // Stop any running timers or tasks
+  heartBeat.stop();
+  setLedColor.stop();
+  alarmHandler.stop();
+  loopMqtt.stop();
+  // Ensure the pump is stopped
+  pumpStop();
+}
 
 void setup() {
+
   firmwareUpdate = false;
   mqttloop = true;
   firmwareUpdateOngoing = false;
   Serial.begin(115200);
-  
-  Serial.println();
+  pinMode(MOSFET_PIN, OUTPUT);
+  digitalWrite(MOSFET_PIN, LOW);
 
-  // Set up WiFiManager parameters
-  WiFiManagerParameter custom_mqtt_server("mqtt_server", "MQTT Server", "", 60);
-  WiFiManagerParameter custom_mqtt_port("mqtt_port", "MQTT Port", "", 4);
-  WiFiManagerParameter custom_mqtt_username("username", "Username", "", 32);
-  WiFiManagerParameter custom_mqtt_password("password", "Password", "", 32);
-
-  wm.setSaveConfigCallback(saveConfigCallback);
-
-  wm.addParameter(&custom_mqtt_server);
-  wm.addParameter(&custom_mqtt_port);
-  wm.addParameter(&custom_mqtt_username);
-  wm.addParameter(&custom_mqtt_password);
-
-  if (!wm.autoConnect("AutoConnectAP")) {
-    Serial.println("Failed to connect, restarting...");
-    delay(3000);
-    ESP.restart();
-  }
-
-  Serial.println("Connected to WiFi!");
-
-  // Save configuration to LittleFS if needed
-  if (shouldSaveConfig) {
-
-    Serial.println("details that will be saved");
-    Serial.println(custom_mqtt_server.getValue());
-    Serial.println(custom_mqtt_username.getValue());
-    Serial.println(custom_mqtt_password.getValue());
-    Serial.println(custom_mqtt_port.getValue());
-    Serial.println("****");
-
-    strcpy(mqttDetails.mqtt_server,custom_mqtt_server.getValue());
-    strcpy(mqttDetails.mqtt_user,custom_mqtt_username.getValue());
-    strcpy(mqttDetails.mqtt_password,custom_mqtt_password.getValue());
-    mqttDetails.mqtt_port = static_cast<uint16_t>(atoi(custom_mqtt_port.getValue()));
-
-
-    Serial.println("Value of mqttDetails param that wiil be saved");
-    Serial.println(mqttDetails.mqtt_server);
-    Serial.println(mqttDetails.mqtt_user);
-    Serial.println(mqttDetails.mqtt_password);
-    Serial.println(mqttDetails.mqtt_port);
-    Serial.println("****");
-
-    Serial.println("Saving config...");
-    eeprom_saveconfig();
-    ESP.restart();
-  }
-  eeprom_read();
-  Serial.println("Local IP:");
-  Serial.println(WiFi.localIP());
-  Serial.println("****");
-  Serial.println(mqttDetails.mqtt_server);
-  Serial.println(mqttDetails.mqtt_user);
-  Serial.println(mqttDetails.mqtt_password);
-  Serial.println(mqttDetails.mqtt_port);
-  Serial.println("****");
+  pinMode(LED_PIN, OUTPUT);
+  led.begin();
+  led.clear();
 
   Wire.begin(SDA_PIN, SCL_PIN);
+
+  espClient.setInsecure();
+  setupWiFi();
+
+  eeprom_read();
+  Serial.print("Local IP: ");
+  Serial.println(WiFi.localIP());
+  Serial.println("Mqtt Details:");
+  Serial.printf("- Server: %s\n",mqttDetails.mqtt_server);
+  Serial.printf("- Port: %d\n",mqttDetails.mqtt_port);
+  Serial.printf("- User: %s\n",mqttDetails.mqtt_user);
+  mqttClient.setServer(mqttDetails.mqtt_server, mqttDetails.mqtt_port);
+  mqttClient.setCallback(mqttCallback);
 
   pinMode(LED_PIN, OUTPUT);
   led.begin();
   led.clear();
   
-  pinMode(MOSFET_PIN, OUTPUT);
-  digitalWrite(MOSFET_PIN, LOW); // Turn off mosfet
+   // Turn off mosfet
   
   button.begin(BUTTON_PIN, INPUT, false);
   button.setDebounceTime(DEBOUNCE_DELAY);
   button.setLongClickTime(LONG_CLICK_WINDOW);
   button.setLongClickDetectedHandler(buttonHandler);  // this will only be called upon detection
 
-  attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), buttonISR, FALLING); 
-
-  espClient.setInsecure();
-  setupWiFi();
-  delay(100);
-  mqttClient.setServer(mqttDetails.mqtt_server, mqttDetails.mqtt_port);
-  mqttClient.setCallback(mqttCallback);
-  delay(100);
+  attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), buttonISR, FALLING);
 
   rtc.begin();
   heartBeat.start();
