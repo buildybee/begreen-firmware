@@ -44,6 +44,30 @@ WiFiManagerParameter custom_mqtt_password("password", "Password", "", 32);
 // Flag for saving data
 bool shouldSaveConfig = false;
 
+WiFiEventHandler wifiConnectHandler;
+WiFiEventHandler wifiDisconnectHandler;
+
+void onWifiConnect(const WiFiEventStationModeGotIP& event) {
+  Serial.println("Connected to WiFi");
+  deviceState.radioStatus = ConnectivityStatus::LOCALCONNECTED;
+  checkForOTAUpdate();
+}
+
+void onWifiDisconnect(const WiFiEventStationModeDisconnected& event) {
+  Serial.println("Disconnected from WiFi");
+  deviceState.radioStatus = ConnectivityStatus::LOCALNOTCONNECTED;
+}
+
+
+// Attempt reconnect afet 30 sec
+Timer wifiReconnectTimer(30000, Timer::SCHEDULER, []() { // Try every 30 seconds
+  if (WiFi.status() != WL_CONNECTED && !wm.getConfigPortalActive()) {
+    Serial.println("Attempting WiFi reconnection...");
+    WiFi.disconnect();
+    WiFi.begin(); // Uses saved credentials
+  }
+});
+
 // Callback notifying us of the need to save config
 void saveConfigCallback() {
   Serial.println("Should save config");
@@ -133,6 +157,8 @@ String generateDeviceID() {
 void setupWiFi() {
   // WiFi.mode(WIFI_STA);  // explicitly set mode, esp defaults to STA+AP
   wm.setWiFiAutoReconnect(true);
+  wm.setConfigPortalTimeout(180); // 3 minutes timeout for config portal
+  wm.setWiFiAutoReconnect(true);
   wm.setConfigPortalBlocking(false);
   wm.addParameter(&custom_mqtt_server);
   wm.addParameter(&custom_mqtt_port);
@@ -152,6 +178,8 @@ void setupWiFi() {
     Serial.println("Configportal running");
     deviceState.radioStatus = ConnectivityStatus::LOCALNOTCONNECTED;
   }
+
+   wifiReconnectTimer.start(); // Start the reconnection timer
 }
 
 void mqttCallback(char *topic, byte *payload, unsigned int length) {
@@ -339,7 +367,7 @@ void mqtt() {
 
 }
 
-Timer heartBeat(60000,Timer::SCHEDULER,[]() {
+Timer heartBeat(5000,Timer::SCHEDULER,[]() {
     if (mqttClient.connected()) {
     mqttClient.publish(HEARBEAT_TOPIC, FIRMWARE_VERSION);
   }
@@ -437,7 +465,8 @@ void setup() {
 
   espClient.setInsecure();
   setupWiFi();
-
+  wifiConnectHandler = WiFi.onStationModeGotIP(onWifiConnect);
+  wifiDisconnectHandler = WiFi.onStationModeDisconnected(onWifiDisconnect);
   eeprom_read();
   Serial.print("Local IP: ");
   Serial.println(WiFi.localIP());
@@ -470,6 +499,17 @@ void setup() {
 
 void loop() {
   wm.process();
+  // Check WiFi status and attempt reconnection if needed
+  
+  if (WiFi.status() != WL_CONNECTED && !wm.getConfigPortalActive()) {
+    static unsigned long lastWifiAttempt = 0;
+    if (millis() - lastWifiAttempt > 30000) { // Every 30 seconds
+      lastWifiAttempt = millis();
+      WiFi.disconnect();
+      WiFi.begin();
+    }
+  }
+
   button.loop();
   mqttClient.loop();
   if (buttonPressed) {
