@@ -2,7 +2,7 @@
 #define MCP7940_SCHEDULER_H
 
 #include <Arduino.h>
-#include <MCP7940.h>
+#include "MCP7940.h"
 
 // NTP Server (Hardcoded)
 #define NTP_SERVER "pool.ntp.org"

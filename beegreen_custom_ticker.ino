@@ -132,6 +132,7 @@ String generateDeviceID() {
 
 void setupWiFi() {
   // WiFi.mode(WIFI_STA);  // explicitly set mode, esp defaults to STA+AP
+  wm.setConfigPortalTimeout(180); // 3 minutes timeout for config portal
   wm.setWiFiAutoReconnect(true);
   wm.setConfigPortalBlocking(false);
   wm.addParameter(&custom_mqtt_server);
@@ -152,6 +153,7 @@ void setupWiFi() {
     Serial.println("Configportal running");
     deviceState.radioStatus = ConnectivityStatus::LOCALNOTCONNECTED;
   }
+
 }
 
 void mqttCallback(char *topic, byte *payload, unsigned int length) {
@@ -339,7 +341,7 @@ void mqtt() {
 
 }
 
-Timer heartBeat(60000,Timer::SCHEDULER,[]() {
+Timer heartBeat(HEARTBEAT_TIMER,Timer::SCHEDULER,[]() {
     if (mqttClient.connected()) {
     mqttClient.publish(HEARBEAT_TOPIC, FIRMWARE_VERSION);
   }
@@ -437,7 +439,6 @@ void setup() {
 
   espClient.setInsecure();
   setupWiFi();
-
   eeprom_read();
   Serial.print("Local IP: ");
   Serial.println(WiFi.localIP());
@@ -470,6 +471,17 @@ void setup() {
 
 void loop() {
   wm.process();
+  // Check WiFi status and attempt reconnection if needed
+  
+  if (WiFi.status() != WL_CONNECTED && !wm.getConfigPortalActive()) {
+    static unsigned long lastWifiAttempt = 0;
+    if (millis() - lastWifiAttempt > 30000) { // Every 30 seconds
+      lastWifiAttempt = millis();
+      WiFi.disconnect();
+      WiFi.begin();
+    }
+  }
+
   button.loop();
   mqttClient.loop();
   if (buttonPressed) {

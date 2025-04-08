@@ -2,12 +2,11 @@
 #define Objects_h
 
 #define PRODUCT_ID "esp7ina219"
-#define FIRMWARE_VERSION "1.1.0"
+#define FIRMWARE_VERSION "1.2.1"
 
 // Define the server and paths for OTA
 #define UPDATEURL "https://raw.githubusercontent.com/buildybee/beegreen-firmware-upgrade/refs/heads/main/esp7ina219.txt"
 #define FIRMWAREDOWNLOAD "https://raw.githubusercontent.com/buildybee/beegreen-firmware-upgrade/refs/heads/main/firmware/esp7ina219/"
-
 
 // mqtt topics
 #define LED_TOPIC "beegreen/status"
@@ -39,6 +38,8 @@
 #define DEBOUNCE_DELAY 80        // Debounce delay in milliseconds
 #define DOUBLE_CLICK_WINDOW 500  // Maximum time between clicks for a double-click in milliseconds
 #define LONG_CLICK_WINDOW 1500
+
+#define HEARTBEAT_TIMER 5000
 
 enum ConnectivityStatus {
   LOCALCONNECTED,
