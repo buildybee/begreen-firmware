@@ -65,6 +65,12 @@ void saveConfigCallback() {
   ESP.restart();
 }
 
+void configPotrtalTimeoutCalback() {
+  if (!digitalRead(MOSFET_PIN)) {
+    wm.reboot();
+  }
+}
+
 void gracefullShutownprep(){
   mqttClient.disconnect();
   wm.disconnect();
@@ -132,9 +138,11 @@ String generateDeviceID() {
 
 void setupWiFi() {
   // WiFi.mode(WIFI_STA);  // explicitly set mode, esp defaults to STA+AP
-  wm.setConfigPortalTimeout(180); // 3 minutes timeout for config portal
-  wm.setWiFiAutoReconnect(true);
   wm.setConfigPortalBlocking(false);
+  wm.setConnectTimeout(20);
+  wm.setWiFiAutoReconnect(true);
+  wm.setConfigPortalTimeout(120);
+  wm.setConfigPortalTimeoutCallback(configPotrtalTimeoutCalback);
   wm.addParameter(&custom_mqtt_server);
   wm.addParameter(&custom_mqtt_port);
   wm.addParameter(&custom_mqtt_username);
@@ -232,18 +240,18 @@ void buttonHandler(Button2& btn) {
 }
 
 void publishMsg(const char *topic, const char *payload){
-if (mqttClient.connected()) {
-    String jsonPayload = "{";
-    jsonPayload += "\"payload\":\"";
-    jsonPayload += payload;
-    jsonPayload += "\",";
-    jsonPayload += "\"timestamp\":\"";
-    jsonPayload += rtc.getCurrentTimestamp();
-    jsonPayload += "\"";
-    jsonPayload += "}";
+  if (mqttClient.connected()) {
+      String jsonPayload = "{";
+      jsonPayload += "\"payload\":\"";
+      jsonPayload += payload;
+      jsonPayload += "\",";
+      jsonPayload += "\"timestamp\":\"";
+      jsonPayload += rtc.getCurrentTimestamp();
+      jsonPayload += "\"";
+      jsonPayload += "}";
 
-    mqttClient.publish(topic, jsonPayload.c_str()); // Publish the JSON payload
-  }
+      mqttClient.publish(topic, jsonPayload.c_str()); // Publish the JSON payload
+    }
 }
 
 void pumpStart(){
@@ -320,25 +328,33 @@ void checkForOTAUpdate() {
   http.end();
 }
 
-void mqtt() {
-  if (WiFi.status() == WL_CONNECTED){
-    if (!mqttClient.connected()) {
-      if (mqttClient.connect("beegreen", mqttDetails.mqtt_user, mqttDetails.mqtt_password)) {
-        mqttClient.subscribe(PUMP_CONTROL_TOPIC);
-        mqttClient.subscribe(SET_SCHEDULE);
-        mqttClient.subscribe(REQUEST_NEXT_SCHEDULE);
-        mqttClient.subscribe(GET_UPDATE_REQUEST);
-        deviceState.radioStatus = ConnectivityStatus::SERVERCONNECTED;
-      } else { 
-        deviceState.radioStatus = ConnectivityStatus::SERVERNOTCONNECTED;
-      }
-    } else {
-      deviceState.radioStatus = ConnectivityStatus::SERVERCONNECTED;
-    }
-  } else { 
-    deviceState.radioStatus = ConnectivityStatus::LOCALNOTCONNECTED; 
+void connectNetworkStack() {
+  if (WiFi.status() == WL_CONNECTED && mqttClient.connected()) {
+    deviceState.radioStatus = ConnectivityStatus::SERVERCONNECTED;
+    return;
   }
 
+  if (WiFi.status() == WL_CONNECTED && !mqttClient.connected()) {
+    if (mqttClient.connect("beegreen", mqttDetails.mqtt_user, mqttDetails.mqtt_password)) {
+      mqttClient.subscribe(PUMP_CONTROL_TOPIC);
+      mqttClient.subscribe(SET_SCHEDULE);
+      mqttClient.subscribe(REQUEST_NEXT_SCHEDULE);
+      mqttClient.subscribe(GET_UPDATE_REQUEST);
+      deviceState.radioStatus = ConnectivityStatus::SERVERCONNECTED;
+      return;
+    }
+    deviceState.radioStatus = ConnectivityStatus::SERVERNOTCONNECTED;
+    return;
+  }
+
+  if (WiFi.status() != WL_CONNECTED && wm.getConfigPortalActive()) {
+     deviceState.radioStatus = ConnectivityStatus::LOCALNOTCONNECTED;
+     return;
+  }
+
+  if (WiFi.status() != WL_CONNECTED && !wm.getConfigPortalActive() && !digitalRead(MOSFET_PIN)) {
+     wm.reboot();
+  }
 }
 
 Timer heartBeat(HEARTBEAT_TIMER,Timer::SCHEDULER,[]() {
@@ -489,7 +505,7 @@ void loop() {
   }
 
   if(mqttloop) {
-    mqtt();
+    connectNetworkStack();
     mqttloop = false;
   }
 

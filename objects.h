@@ -2,7 +2,7 @@
 #define Objects_h
 
 #define PRODUCT_ID "esp7ina219"
-#define FIRMWARE_VERSION "1.2.1"
+#define FIRMWARE_VERSION "1.2.2"
 
 // Define the server and paths for OTA
 #define UPDATEURL "https://raw.githubusercontent.com/buildybee/beegreen-firmware-upgrade/refs/heads/main/esp7ina219.txt"
