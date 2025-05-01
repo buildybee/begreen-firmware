@@ -18,10 +18,18 @@
 #define REQUEST_NEXT_SCHEDULE "beegreen/request_schedule"
 #define GET_NEXT_SCHEDULE "beegreen/get_schedule"
 #define GET_UPDATE_REQUEST "beegreen/firmware_upgrade"
+#define CURRENT_CONSUMPTION "beegreen/current_consumption"
 
 // I2C Pins
 #define SDA_PIN 5
 #define SCL_PIN 4
+
+#define INA219_I2C_ADDR 0x40
+#define MCP7940_I2C_ADDR 0x6F
+
+//INA219_HDWR_CONFIG
+#define SHUNT 0.01
+#define MAX_CURRENT 3.4
 
 // I/O constants
 #define BUTTON_PIN 14
@@ -33,7 +41,8 @@
 #define LED_BRIGHTNESS 100
 #define POWER_CONSUMPTION_THRESHOLD 50
 #define PING_INTERVAL 6000
-#define INA219_ADDR 0x40
+
+
 
 #define DEBOUNCE_DELAY 80        // Debounce delay in milliseconds
 #define DOUBLE_CLICK_WINDOW 500  // Maximum time between clicks for a double-click in milliseconds
