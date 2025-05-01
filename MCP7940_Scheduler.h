@@ -55,6 +55,9 @@ public:
     // Get the current alarms (returns both Alarm 0 and Alarm 1)
     void getAlarms(DateTime &alarm0, DateTime &alarm1);
 
+    bool deleteAlarm();
+
+    void deleteSchedule();
 
 private:
   MCP7940_Class rtc;

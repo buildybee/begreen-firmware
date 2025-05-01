@@ -40,6 +40,7 @@ bool MCP7940Scheduler::updateTimeFromNTP() {
 }
 
 bool MCP7940Scheduler::setWateringSchedule(WateringSchedule* ws) {
+    deleteSchedule();
     return rtc.writeRAM(0x00, *ws);
 }
 
@@ -60,10 +61,14 @@ String MCP7940Scheduler::getCurrentTimestamp() {
     return String(buffer);
 }
 
+
 bool MCP7940Scheduler::setNextAlarm(bool autoNextInterval) {
     DateTime now = rtc.now();
     WateringSchedule currentSchedule;
     getWateringSchedule(&currentSchedule);
+    if (currentSchedule.duration_sec == 0) {
+        return false;
+    }
 
     DateTime nextAlarmTime;
     uint16_t startSeconds = currentSchedule.hour * 3600 + currentSchedule.minute * 60;
@@ -94,4 +99,16 @@ bool MCP7940Scheduler::setNextAlarm(bool autoNextInterval) {
 void MCP7940Scheduler::getAlarms(DateTime &onAlarm, DateTime &offAlarm) {
     onAlarm = rtc.getAlarm(0, ALARM_TYPE);
     offAlarm = rtc.getAlarm(1, ALARM_TYPE);
+}
+
+
+bool MCP7940Scheduler::deleteAlarm(){
+    rtc.setAlarmState(ONTRIGGER,false);
+    rtc.setAlarmState(OFFTRIGGER,false);
+    return rtc.clearAlarm(ONTRIGGER) && rtc.clearAlarm(OFFTRIGGER);
+}
+
+void MCP7940Scheduler::deleteSchedule(){
+    struct WateringSchedule *ws = {0};
+    setWateringSchedule(ws);
 }
