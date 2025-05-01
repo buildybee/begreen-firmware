@@ -8,6 +8,7 @@
 #include <ESP8266httpUpdate.h>               
 #include <EEPROM.h>            // Use LittleFS instead of SPIFFS
 #include <ArduinoJson.h>
+#include <INA219.h>
 
 //custom header
 #include "Timer.h"
@@ -21,14 +22,17 @@ MCP7940Scheduler rtc;
 Button2 button;
 Adafruit_NeoPixel led(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 LedColor ledColorPicker[2] = {LedColor::RED,LedColor::OFF};
-bool picker = false;
 State deviceState;
+INA219 INA(INA219_I2C_ADDR);
+
+bool picker = false;
 bool resetTrigger = false;
 bool pendingAlarmUpdate= false;
 volatile bool buttonPressed = false;
 volatile unsigned long lastPressTime = 0; // Timestamp of the last button press
 volatile bool doubleClickDetected = false;
 bool mqttloop,firmwareUpdate,firmwareUpdateOngoing;
+float current  = 0;
 
 
 
@@ -438,6 +442,19 @@ void stopServices() {
   pumpStop();
 }
 
+#ifdef INA219_I2C_ADDR
+  Timer currentConsumption(10000, Timer::SCHEDULER,[]() {
+    if (INA.isConnected()) {
+      current  = INA.getCurrent_mA();
+      Serial.println(current);
+      if (current !=0){
+         publishMsg(CURRENT_CONSUMPTION, String(current).c_str());
+      }
+    }
+  });
+#endif
+
+
 void setup() {
 
   firmwareUpdate = false;
@@ -479,6 +496,15 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), buttonISR, FALLING);
 
   rtc.begin();
+
+  #ifdef INA219_I2C_ADDR
+    while(!INA.begin() ) {
+        Serial.println("Could not connect. Fix and Reboot");
+      }
+    INA.setMaxCurrentShunt(3.4, 0.01);
+    currentConsumption.start();
+  #endif
+
   heartBeat.start();
   setLedColor.start();
   alarmHandler.start();
