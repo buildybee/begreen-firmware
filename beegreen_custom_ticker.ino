@@ -262,25 +262,12 @@ void publishMsg(const char *topic, const char *payload,bool retained){
 }
 
 
-#ifdef INA219_I2C_ADDR
-  Timer currentConsumption(15000, Timer::SCHEDULER,[]() {
-    if (INA.isConnected() && digitalRead(MOSFET_PIN)) {
-      current  = INA.getCurrent_mA();
-      Serial.println(current);
-      if (current !=0){
-         publishMsg(CURRENT_CONSUMPTION, String(current).c_str(),false);
-      }
-    }
-  });
-#endif
-
 void pumpStart(){
   if (!digitalRead(MOSFET_PIN) && (!firmwareUpdate)) {
     Serial.println("Starting pump");
     digitalWrite(MOSFET_PIN, HIGH);
     deviceState.pumpRunning = true;
     publishMsg(PUMP_STATUS_TOPIC, "on",true);
-    currentConsumption.start();
     return;
   } 
   Serial.println("Pump already in running state or upgrade in progress");
@@ -292,7 +279,6 @@ void pumpStop(){
     digitalWrite(MOSFET_PIN, LOW);
     deviceState.pumpRunning = false;
     publishMsg(PUMP_STATUS_TOPIC, "off",true);
-    currentConsumption.stop();
     if (pendingAlarmUpdate){
       rtc.setNextAlarm(false);
       pendingAlarmUpdate = !pendingAlarmUpdate;
@@ -459,6 +445,19 @@ void stopServices() {
   // Ensure the pump is stopped
   pumpStop();
 }
+
+
+#ifdef INA219_I2C_ADDR
+  Timer currentConsumption(30000, Timer::SCHEDULER,[]() {
+    if (INA.isConnected() && digitalRead(MOSFET_PIN)) {
+      current  = INA.getCurrent_mA();
+      Serial.println(current);
+      if (current !=0){
+         publishMsg(CURRENT_CONSUMPTION, String(current).c_str(),false);
+      }
+    }
+  });
+#endif
 
 
 void setup() {
