@@ -9,16 +9,20 @@
 #define FIRMWAREDOWNLOAD "https://raw.githubusercontent.com/buildybee/beegreen-firmware-upgrade/refs/heads/main/firmware/esp7ina219/"
 
 // mqtt topics
-#define LED_TOPIC "beegreen/status"
-#define SENSOR_TOPIC "beegreen/sensor"
-#define PUMP_CONTROL_TOPIC "beegreen/pump_trigger"
 #define HEARBEAT_TOPIC "beegreen/heartbeat"
-#define SET_SCHEDULE "beegreen/set_schedule"
+#define BEEGREEN_STATUS "beegreen/status"
+
+#define PUMP_CONTROL_TOPIC "beegreen/pump_trigger"
 #define PUMP_STATUS_TOPIC "beegreen/pump_status"
+
+#define SET_SCHEDULE "beegreen/set_schedule"
 #define REQUEST_NEXT_SCHEDULE "beegreen/request_schedule"
 #define GET_NEXT_SCHEDULE "beegreen/get_schedule"
-#define GET_UPDATE_REQUEST "beegreen/firmware_upgrade"
+
 #define CURRENT_CONSUMPTION "beegreen/current_consumption"
+#define GET_UPDATE_REQUEST "beegreen/firmware_upgrade"
+
+#define RESTART "beegreen/restart"
 
 // I2C Pins
 #define SDA_PIN 5
@@ -56,13 +60,6 @@ enum ConnectivityStatus {
   SERVERCONNECTED,
   SERVERNOTCONNECTED,
 };
-
-enum BeeKeeper {
-  PUMPRUNNING,
-  PUMPOFF,
-  NOWATER,
-};
-
 
 typedef struct {
 char mqtt_server[60] = "";

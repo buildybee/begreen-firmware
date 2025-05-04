@@ -203,7 +203,10 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
     if (atoi(payloadStr)==1){
       firmwareUpdate = true;
     }
-  } else {
+  } else if (strcmp(topic, RESTART) == 0) {
+    ESP.restart();
+  }
+   else {
     Serial.print("Topic action not found");
   }
 }
@@ -243,7 +246,7 @@ void buttonHandler(Button2& btn) {
   }
 }
 
-void publishMsg(const char *topic, const char *payload){
+void publishMsg(const char *topic, const char *payload,bool retained){
   if (mqttClient.connected()) {
       String jsonPayload = "{";
       jsonPayload += "\"payload\":\"";
@@ -254,19 +257,33 @@ void publishMsg(const char *topic, const char *payload){
       jsonPayload += "\"";
       jsonPayload += "}";
 
-      mqttClient.publish(topic, jsonPayload.c_str()); // Publish the JSON payload
+      mqttClient.publish(topic, jsonPayload.c_str(),retained); // Publish the JSON payload
     }
 }
+
+
+#ifdef INA219_I2C_ADDR
+  Timer currentConsumption(1000, Timer::SCHEDULER,[]() {
+    if (INA.isConnected() && digitalRead(MOSFET_PIN)) {
+      current  = INA.getCurrent_mA();
+      Serial.println(current);
+      if (current !=0){
+         publishMsg(CURRENT_CONSUMPTION, String(current).c_str(),false);
+      }
+    }
+  });
+#endif
 
 void pumpStart(){
   if (!digitalRead(MOSFET_PIN) && (!firmwareUpdate)) {
     Serial.println("Starting pump");
     digitalWrite(MOSFET_PIN, HIGH);
     deviceState.pumpRunning = true;
-    publishMsg(PUMP_STATUS_TOPIC, "on");
+    publishMsg(PUMP_STATUS_TOPIC, "on",true);
+    currentConsumption.start();
     return;
   } 
-  Serial.println("Pump already in running state or upgrade in prgress");
+  Serial.println("Pump already in running state or upgrade in progress");
 }
 
 void pumpStop(){
@@ -274,7 +291,8 @@ void pumpStop(){
     Serial.println("Stopping pump");
     digitalWrite(MOSFET_PIN, LOW);
     deviceState.pumpRunning = false;
-    publishMsg(PUMP_STATUS_TOPIC, "off");
+    publishMsg(PUMP_STATUS_TOPIC, "off",true);
+    currentConsumption.stop();
     if (pendingAlarmUpdate){
       rtc.setNextAlarm(false);
       pendingAlarmUpdate = !pendingAlarmUpdate;
@@ -442,18 +460,6 @@ void stopServices() {
   pumpStop();
 }
 
-#ifdef INA219_I2C_ADDR
-  Timer currentConsumption(10000, Timer::SCHEDULER,[]() {
-    if (INA.isConnected()) {
-      current  = INA.getCurrent_mA();
-      Serial.println(current);
-      if (current !=0){
-         publishMsg(CURRENT_CONSUMPTION, String(current).c_str());
-      }
-    }
-  });
-#endif
-
 
 void setup() {
 
@@ -498,11 +504,11 @@ void setup() {
   rtc.begin();
 
   #ifdef INA219_I2C_ADDR
-    while(!INA.begin() ) {
+    if(INA.begin() ) {
+        INA.setMaxCurrentShunt(3.4, 0.01);
+        currentConsumption.start();
         Serial.println("Could not connect. Fix and Reboot");
       }
-    INA.setMaxCurrentShunt(3.4, 0.01);
-    currentConsumption.start();
   #endif
 
   heartBeat.start();
