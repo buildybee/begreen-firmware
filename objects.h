@@ -57,6 +57,13 @@ enum ConnectivityStatus {
   SERVERNOTCONNECTED,
 };
 
+enum BeeKeeper {
+  PUMPRUNNING,
+  PUMPOFF,
+  NOWATER,
+};
+
+
 typedef struct {
 char mqtt_server[60] = "";
 uint16_t mqtt_port;
