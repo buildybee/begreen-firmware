@@ -263,7 +263,7 @@ void publishMsg(const char *topic, const char *payload,bool retained){
 
 
 #ifdef INA219_I2C_ADDR
-  Timer currentConsumption(1000, Timer::SCHEDULER,[]() {
+  Timer currentConsumption(15000, Timer::SCHEDULER,[]() {
     if (INA.isConnected() && digitalRead(MOSFET_PIN)) {
       current  = INA.getCurrent_mA();
       Serial.println(current);
