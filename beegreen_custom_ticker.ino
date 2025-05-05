@@ -267,7 +267,7 @@ void pumpStart(){
     Serial.println("Starting pump");
     digitalWrite(MOSFET_PIN, HIGH);
     deviceState.pumpRunning = true;
-    publishMsg(PUMP_STATUS_TOPIC, "on",true);
+    publishMsg(PUMP_STATUS_TOPIC, "on",false);
     return;
   } 
   Serial.println("Pump already in running state or upgrade in progress");
@@ -278,7 +278,7 @@ void pumpStop(){
     Serial.println("Stopping pump");
     digitalWrite(MOSFET_PIN, LOW);
     deviceState.pumpRunning = false;
-    publishMsg(PUMP_STATUS_TOPIC, "off",true);
+    publishMsg(PUMP_STATUS_TOPIC, "off",false);
     if (pendingAlarmUpdate){
       rtc.setNextAlarm(false);
       pendingAlarmUpdate = !pendingAlarmUpdate;
