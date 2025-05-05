@@ -2,26 +2,38 @@
 #define Objects_h
 
 #define PRODUCT_ID "esp7ina219"
-#define FIRMWARE_VERSION "1.2.2"
+#define FIRMWARE_VERSION "1.2.6"
 
 // Define the server and paths for OTA
 #define UPDATEURL "https://raw.githubusercontent.com/buildybee/beegreen-firmware-upgrade/refs/heads/main/esp7ina219.txt"
 #define FIRMWAREDOWNLOAD "https://raw.githubusercontent.com/buildybee/beegreen-firmware-upgrade/refs/heads/main/firmware/esp7ina219/"
 
 // mqtt topics
-#define LED_TOPIC "beegreen/status"
-#define SENSOR_TOPIC "beegreen/sensor"
-#define PUMP_CONTROL_TOPIC "beegreen/pump_trigger"
 #define HEARBEAT_TOPIC "beegreen/heartbeat"
-#define SET_SCHEDULE "beegreen/set_schedule"
+#define BEEGREEN_STATUS "beegreen/status"
+
+#define PUMP_CONTROL_TOPIC "beegreen/pump_trigger"
 #define PUMP_STATUS_TOPIC "beegreen/pump_status"
+
+#define SET_SCHEDULE "beegreen/set_schedule"
 #define REQUEST_NEXT_SCHEDULE "beegreen/request_schedule"
 #define GET_NEXT_SCHEDULE "beegreen/get_schedule"
+
+#define CURRENT_CONSUMPTION "beegreen/current_consumption"
 #define GET_UPDATE_REQUEST "beegreen/firmware_upgrade"
+
+#define RESTART "beegreen/restart"
 
 // I2C Pins
 #define SDA_PIN 5
 #define SCL_PIN 4
+
+#define INA219_I2C_ADDR 0x40
+#define MCP7940_I2C_ADDR 0x6F
+
+//INA219_HDWR_CONFIG
+#define SHUNT 0.01
+#define MAX_CURRENT 3.4
 
 // I/O constants
 #define BUTTON_PIN 14
@@ -33,7 +45,8 @@
 #define LED_BRIGHTNESS 100
 #define POWER_CONSUMPTION_THRESHOLD 50
 #define PING_INTERVAL 6000
-#define INA219_ADDR 0x40
+
+
 
 #define DEBOUNCE_DELAY 80        // Debounce delay in milliseconds
 #define DOUBLE_CLICK_WINDOW 500  // Maximum time between clicks for a double-click in milliseconds

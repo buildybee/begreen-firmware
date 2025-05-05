@@ -75,9 +75,10 @@ bool MCP7940Scheduler::setNextAlarm(bool autoNextInterval) {
         uint16_t remainingSeconds = intervalSeconds - (elapsedSinceStart % intervalSeconds);
         nextAlarmTime = now + TimeSpan(0, 0, remainingSeconds / 60, remainingSeconds % 60);
     } else {
+        DateTime tomorrow = now + TimeSpan(1, 0, 0, 0);
         nextAlarmTime = (nowSeconds < startSeconds)
                             ? DateTime(now.year(), now.month(), now.day(), currentSchedule.hour, currentSchedule.minute, 0)
-                            : DateTime(now + TimeSpan(1, 0, 0, 0));
+                            : DateTime(tomorrow.year(), tomorrow.month(), tomorrow.day(), currentSchedule.hour, currentSchedule.minute, 0);
     }
 
     rtc.clearAlarm(ALARM::ONTRIGGER);

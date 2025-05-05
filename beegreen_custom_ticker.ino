@@ -8,6 +8,7 @@
 #include <ESP8266httpUpdate.h>               
 #include <EEPROM.h>            // Use LittleFS instead of SPIFFS
 #include <ArduinoJson.h>
+#include <INA219.h>
 
 //custom header
 #include "Timer.h"
@@ -21,14 +22,17 @@ MCP7940Scheduler rtc;
 Button2 button;
 Adafruit_NeoPixel led(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 LedColor ledColorPicker[2] = {LedColor::RED,LedColor::OFF};
-bool picker = false;
 State deviceState;
+INA219 INA(INA219_I2C_ADDR);
+
+bool picker = false;
 bool resetTrigger = false;
 bool pendingAlarmUpdate= false;
 volatile bool buttonPressed = false;
 volatile unsigned long lastPressTime = 0; // Timestamp of the last button press
 volatile bool doubleClickDetected = false;
 bool mqttloop,firmwareUpdate,firmwareUpdateOngoing;
+float current  = 0;
 
 
 
@@ -199,7 +203,10 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
     if (atoi(payloadStr)==1){
       firmwareUpdate = true;
     }
-  } else {
+  } else if (strcmp(topic, RESTART) == 0) {
+    ESP.restart();
+  }
+   else {
     Serial.print("Topic action not found");
   }
 }
@@ -239,7 +246,7 @@ void buttonHandler(Button2& btn) {
   }
 }
 
-void publishMsg(const char *topic, const char *payload){
+void publishMsg(const char *topic, const char *payload,bool retained){
   if (mqttClient.connected()) {
       String jsonPayload = "{";
       jsonPayload += "\"payload\":\"";
@@ -250,19 +257,20 @@ void publishMsg(const char *topic, const char *payload){
       jsonPayload += "\"";
       jsonPayload += "}";
 
-      mqttClient.publish(topic, jsonPayload.c_str()); // Publish the JSON payload
+      mqttClient.publish(topic, jsonPayload.c_str(),retained); // Publish the JSON payload
     }
 }
+
 
 void pumpStart(){
   if (!digitalRead(MOSFET_PIN) && (!firmwareUpdate)) {
     Serial.println("Starting pump");
     digitalWrite(MOSFET_PIN, HIGH);
     deviceState.pumpRunning = true;
-    publishMsg(PUMP_STATUS_TOPIC, "on");
+    publishMsg(PUMP_STATUS_TOPIC, "on",true);
     return;
   } 
-  Serial.println("Pump already in running state or upgrade in prgress");
+  Serial.println("Pump already in running state or upgrade in progress");
 }
 
 void pumpStop(){
@@ -270,7 +278,7 @@ void pumpStop(){
     Serial.println("Stopping pump");
     digitalWrite(MOSFET_PIN, LOW);
     deviceState.pumpRunning = false;
-    publishMsg(PUMP_STATUS_TOPIC, "off");
+    publishMsg(PUMP_STATUS_TOPIC, "off",true);
     if (pendingAlarmUpdate){
       rtc.setNextAlarm(false);
       pendingAlarmUpdate = !pendingAlarmUpdate;
@@ -438,6 +446,20 @@ void stopServices() {
   pumpStop();
 }
 
+
+#ifdef INA219_I2C_ADDR
+  Timer currentConsumption(30000, Timer::SCHEDULER,[]() {
+    if (INA.isConnected() && digitalRead(MOSFET_PIN)) {
+      current  = INA.getCurrent_mA();
+      Serial.println(current);
+      if (current !=0){
+         publishMsg(CURRENT_CONSUMPTION, String(current).c_str(),false);
+      }
+    }
+  });
+#endif
+
+
 void setup() {
 
   firmwareUpdate = false;
@@ -479,6 +501,15 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), buttonISR, FALLING);
 
   rtc.begin();
+
+  #ifdef INA219_I2C_ADDR
+    if(INA.begin() ) {
+        INA.setMaxCurrentShunt(3.4, 0.01);
+        currentConsumption.start();
+        Serial.println("Could not connect. Fix and Reboot");
+      }
+  #endif
+
   heartBeat.start();
   setLedColor.start();
   alarmHandler.start();
