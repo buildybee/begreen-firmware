@@ -3,12 +3,12 @@
 #include <WiFiManager.h>        // https://github.com/tzapu/WiFiManager
 #include <PubSubClient.h>       // https://pubsubclient.knolleary.net/api 
 #include <Adafruit_NeoPixel.h>  // https://github.com/adafruit/Adafruit_NeoPixel
-#include <Button2.h>
 #include <ESP8266HTTPClient.h>
 #include <ESP8266httpUpdate.h>               
 #include <EEPROM.h>            // Use LittleFS instead of SPIFFS
 #include <ArduinoJson.h>
 #include <INA219.h>
+#include <DoubleResetDetect.h>
 
 //custom header
 #include "Timer.h"
@@ -19,21 +19,20 @@
 BearSSL::WiFiClientSecure espClient;
 PubSubClient mqttClient(espClient);
 MCP7940Scheduler rtc;
-Button2 button;
 Adafruit_NeoPixel led(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 LedColor ledColorPicker[2] = {LedColor::RED,LedColor::OFF};
 State deviceState;
 INA219 INA(INA219_I2C_ADDR);
+DoubleResetDetect drd(DRD_TIMEOUT, DRD_ADDRESS);
 
 bool picker = false;
 bool resetTrigger = false;
 bool pendingAlarmUpdate= false;
-volatile bool buttonPressed = false;
-volatile unsigned long lastPressTime = 0; // Timestamp of the last button press
-volatile bool doubleClickDetected = false;
 bool mqttloop,firmwareUpdate,firmwareUpdateOngoing;
 float current  = 0;
-
+volatile unsigned long lastClickTime = 0;
+volatile uint8_t clickCount = 0;
+unsigned long lastButtonCheckTime = 0;
 
 
 WiFiManager wm;
@@ -88,41 +87,23 @@ void gracefullShutownprep(){
 }
 
 // ISR for button press
+
+// Interrupt handler (IRAM_ATTR for ESP8266)
 void IRAM_ATTR buttonISR() {
-  static unsigned long lastISRTime = 0;
-  unsigned long currentISRTime = millis();
+  static unsigned long lastDebounceTime = 0;
+  unsigned long now = millis();
 
-  // Debounce logic
-  if ((currentISRTime - lastISRTime) > DEBOUNCE_DELAY) {
-    if ((currentISRTime - lastPressTime) <= DOUBLE_CLICK_WINDOW) {
-      doubleClickDetected = true;  // Double click detected
-    } else {
-      doubleClickDetected = false; // Reset double click detection
-    }
-    lastPressTime = currentISRTime;
-    buttonPressed = true;
-  }
-  lastISRTime = currentISRTime;
-}
+  // Debounce check
+  if (now - lastDebounceTime < DEBOUNCE_DELAY) return;
+  lastDebounceTime = now;
 
-// Function to process button events
-void handleButtonPress() {
-  if (doubleClickDetected) {
-    Serial.println("Double-click detected");
-    if (resetTrigger){
-      gracefullShutownprep();
-      wm.resetSettings();
-      Serial.println("Reset done");
-      ESP.restart();
-    }
-    if (!digitalRead(MOSFET_PIN)){
-      pumpStart();
-    } else{
-      pumpStop();
-    }
-    doubleClickDetected = false;
+  // Register click
+  if (now - lastClickTime < DOUBLE_CLICK_WINDOW) {
+    clickCount++; // Increment if within double-click window
+  } else {
+    clickCount = 1; // Reset if too slow
   }
-  buttonPressed = false;
+  lastClickTime = now;
 }
 
 // Method to generate the string in the format "prefix_chipID_last4mac"
@@ -234,18 +215,6 @@ bool parseSchedulePayload(const char* payload, WateringSchedule& ws) {
   return false;
 }
 
-void buttonHandler(Button2& btn) {
-  Serial.print("In Button handler Instance: ");
-  if (btn.getType() == long_click)
-  Serial.println("Long click");
-  resetTrigger = !resetTrigger;
-  if (resetTrigger){
-    Serial.println("Reset trigger engaged: Double click to reset");
-  } else {
-    Serial.println("Reset trigger disengaged");
-  }
-}
-
 void publishMsg(const char *topic, const char *payload,bool retained){
   if (mqttClient.connected()) {
       String jsonPayload = "{";
@@ -267,7 +236,9 @@ void pumpStart(){
     Serial.println("Starting pump");
     digitalWrite(MOSFET_PIN, HIGH);
     deviceState.pumpRunning = true;
-    publishMsg(PUMP_STATUS_TOPIC, "on",false);
+    if (mqttClient.connected()) {
+      publishMsg(PUMP_STATUS_TOPIC, "on",true);
+    }
     return;
   } 
   Serial.println("Pump already in running state or upgrade in progress");
@@ -278,7 +249,9 @@ void pumpStop(){
     Serial.println("Stopping pump");
     digitalWrite(MOSFET_PIN, LOW);
     deviceState.pumpRunning = false;
-    publishMsg(PUMP_STATUS_TOPIC, "off",false);
+    if (mqttClient.connected()) {
+      publishMsg(PUMP_STATUS_TOPIC, "off",true);
+    }
     if (pendingAlarmUpdate){
       rtc.setNextAlarm(false);
       pendingAlarmUpdate = !pendingAlarmUpdate;
@@ -372,7 +345,7 @@ Timer heartBeat(HEARTBEAT_TIMER,Timer::SCHEDULER,[]() {
 });
 
 Timer setLedColor(500,Timer::SCHEDULER,[](){
-  if (resetTrigger || firmwareUpdateOngoing){
+  if (firmwareUpdateOngoing){
     ledColorPicker[0] = LedColor::MAGENTA;
     ledColorPicker[1] = LedColor::OFF;
   } else if (deviceState.pumpRunning){
@@ -422,13 +395,13 @@ Timer loopMqtt(5000,Timer::SCHEDULER,[]() {
 
 void eeprom_read() {
   EEPROM.begin(sizeof(mqttDetails) + 10);
-  EEPROM.get(10, mqttDetails);
+  EEPROM.get(EEPROM_START_ADDR, mqttDetails);
   EEPROM.end();
 }
 
 void eeprom_saveconfig() {
   EEPROM.begin(sizeof(mqttDetails) + 10);
-  EEPROM.put(10, mqttDetails);
+  EEPROM.put(EEPROM_START_ADDR, mqttDetails);
   if (EEPROM.commit()){
   EEPROM.end();
   } else { Serial.println ("SAving failed"); }
@@ -461,11 +434,18 @@ void stopServices() {
 
 
 void setup() {
+  Serial.begin(115200);
+  if (drd.detect()) {
+    Serial.println("Entering config mode via double reset");
+    wm.resetSettings();
+    Serial.println("Reset done");
+    delay(1000);
+    ESP.restart();
+  }
 
   firmwareUpdate = false;
   mqttloop = true;
   firmwareUpdateOngoing = false;
-  Serial.begin(115200);
   pinMode(MOSFET_PIN, OUTPUT);
   digitalWrite(MOSFET_PIN, LOW);
 
@@ -493,21 +473,15 @@ void setup() {
   
    // Turn off mosfet
   
-  button.begin(BUTTON_PIN, INPUT, false);
-  button.setDebounceTime(DEBOUNCE_DELAY);
-  button.setLongClickTime(LONG_CLICK_WINDOW);
-  button.setLongClickDetectedHandler(buttonHandler);  // this will only be called upon detection
-
   attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), buttonISR, FALLING);
 
   rtc.begin();
 
   #ifdef INA219_I2C_ADDR
-    if(INA.begin() ) {
-        INA.setMaxCurrentShunt(3.4, 0.01);
+    if(INA.begin()) {
+        INA.setMaxCurrentShunt(MAX_CURRENT, SHUNT);
         currentConsumption.start();
-        Serial.println("Could not connect. Fix and Reboot");
-      }
+    } else { Serial.println("INA219: Could not connect. Fix and Reboot"); }
   #endif
 
   heartBeat.start();
@@ -528,11 +502,18 @@ void loop() {
       WiFi.begin();
     }
   }
-
-  button.loop();
   mqttClient.loop();
-  if (buttonPressed) {
-    handleButtonPress();
+  
+   // Reset clickCount if no follow-up click occurs within CLICK_RESET_TIMEOUT
+  if (clickCount > 0 && millis() - lastClickTime >= DOUBLE_CLICK_WINDOW+50) {
+    clickCount = 0; // Force reset
+  }
+
+  // Handle double-click (only if 2+ clicks within DOUBLE_CLICK_GAP)
+  if (clickCount >= 2) {
+    clickCount = 0; // Reset after action
+    if (!digitalRead(MOSFET_PIN)) pumpStart();
+    else pumpStop();
   }
 
   if(mqttloop) {
