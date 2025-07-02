@@ -1,0 +1,105 @@
+# 🐝 BeeGreen - Smart Irrigation Controller
+
+**BeeGreen** is a lightweight, low-power smart irrigation controller built on the ESP8266. It offers automatic watering based on scheduled timings, remote pump control via MQTT, OTA updates, and real-time current monitoring — all with visual feedback using WS2812B LEDs.
+
+---
+
+## 🌟 Features
+
+- 🌐 **Wi-Fi Manager Integration**
+  - Auto-connects or creates an AP for easy configuration.
+  - Custom MQTT credentials setup via web portal.
+
+- 💧 **Pump Control**
+  - Manual or scheduled pump activation.
+  - Current sensing via INA219 sensor.
+  - Double-click physical button support.
+
+- 🔌 **MQTT Integration**
+  - Publishes pump status and power consumption.
+  - Responds to control and scheduling commands.
+  - OTA update trigger via MQTT topic.
+
+- 🧠 **Scheduling with RTC (MCP7940)**
+  - Set up daily watering schedules.
+  - Persistent alarm support for pump ON/OFF actions.
+
+- 💡 **LED Feedback (WS2812B)**
+  - Displays system status (Wi-Fi, MQTT, pump state, errors).
+  - Reset indication and tank empty alerts.
+
+- 📦 **OTA Firmware Updates**
+  - Automatically checks for updates from a configurable server.
+  - Secure firmware fetching using HTTPS.
+
+- 🧰 **EEPROM Storage**
+  - Stores MQTT credentials persistently.
+
+---
+
+## 📷 Hardware Requirements
+
+| Component           | Description                            |
+|---------------------|----------------------------------------|
+| ESP8266             | NodeMCU / ESP-07 supported             |
+| INA219              | Current sensor (I²C)                   |
+| MCP7940N            | Real-Time Clock (I²C)                  |
+| WS2812B             | Addressable RGB LED                   |
+| Button              | For reset and manual override         |
+| MOSFET              | Controls 12V pump or valve            |
+| AHT20 (optional)    | Temperature and humidity monitoring    |
+
+---
+
+## 📡 MQTT Topics
+
+| Topic                    | Description                      |
+|--------------------------|----------------------------------|
+| `pump/control`           | `1` to start, `0` to stop pump   |
+| `pump/status`            | Publishes `"on"` or `"off"`      |
+| `schedule/set`           | Format: `HH:MM:duration:interval`|
+| `schedule/next`          | Responds with the next schedule  |
+| `current/consumption`    | Publishes pump's current in mA   |
+| `update/request`         | `1` triggers an OTA check        |
+| `device/restart`         | Restarts the ESP8266             |
+| `heartbeat`              | Periodic firmware version ping   |
+
+---
+
+## 🔧 Configuration via Portal
+
+After power-up, if credentials are not saved or the Wi-Fi fails to connect, the device creates a Wi-Fi access point. Connect to it and enter the following fields:
+
+- MQTT Server
+- MQTT Port
+- Username
+- Password
+
+---
+
+## 🔁 Button Behavior
+
+- **Long Press**: Toggles reset trigger mode.
+- **Double Click**:
+  - If reset mode is active → resets all saved config and restarts.
+  - Else → toggles the pump manually.
+
+---
+
+## 🛠️ Setup & Build
+
+1. **Install Libraries** (via Library Manager or manually):
+   - `WiFiManager`
+   - `PubSubClient`
+   - `Adafruit NeoPixel`
+   - `Button2`
+   - `ESP8266HTTPClient`, `ESP8266httpUpdate`
+   - `INA219` (any compatible fork)
+   - `ArduinoJson`
+
+2. **Configure Parameters**  
+   In `helper.h` or equivalent:
+   ```cpp
+   #define FIRMWARE_VERSION "1.0.0"
+   #define UPDATEURL "https://yourdomain.com/update/version.txt"
+   #define FIRMWAREDOWNLOAD "https://yourdomain.com/update/"
