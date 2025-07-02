@@ -79,7 +79,7 @@ void gracefullShutownprep(){
   wm.disconnect();
   pumpStop();
   if (pendingAlarmUpdate){
-      rtc.setNextAlarm(false);
+      rtc.setNextAlarm();
       pendingAlarmUpdate = !pendingAlarmUpdate;
   }
   led.setPixelColor(0,LedColor::OFF);
@@ -153,35 +153,52 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
   Serial.print("Message arrived [");
   Serial.print(topic);
   Serial.print("] ");
-  // Create a null-terminated string from the payload
+
   char payloadStr[length + 1];
   strncpy(payloadStr, (char *)payload, length);
   payloadStr[length] = '\0';
   Serial.println(payloadStr);
 
   if (strcmp(topic, PUMP_CONTROL_TOPIC) == 0) {
-    if (atoi(payloadStr)==1){
-      pumpStart();
-    } else {
+    int duration = atoi(payloadStr);
+
+    if (duration == 0) {
+      // If payload is "0", stop the pump.
       pumpStop();
+    } else if (duration > 0) {
+      // If payload is a positive number, start the pump with that duration.
+      pumpStart();
+      rtc.setManualStopTime(duration);
     }
   } else if (strcmp(topic, SET_SCHEDULE) == 0) {
     onSetScheduleCallback(payloadStr);
-    if (digitalRead(MOSFET_PIN)){
-      pendingAlarmUpdate = true;
-    } else {rtc.setNextAlarm(false);}
-  } else if (strcmp(topic, REQUEST_NEXT_SCHEDULE) == 0) {
-    DateTime onAlarm,offAlarm;
-    WateringSchedule ws;
-    rtc.getWateringSchedule(&ws);
-    rtc.getAlarms(onAlarm,offAlarm);
-    char buffer[40];
-    snprintf(buffer,40,"%02d/%02d %02d:%02d,%d:%d",
-             onAlarm.day(), onAlarm.month(), onAlarm.hour(), onAlarm.minute(), 
-             ws.duration_sec,ws.interval_minute);
-    mqttClient.publish(GET_NEXT_SCHEDULE,buffer);
+    // Only apply the changes immediately if the pump is not running.
+    if (!digitalRead(MOSFET_PIN)) {
+      updateAndPublishNextAlarm();
+    }
+  } else if (strcmp(topic, REQUEST_ALL_SCHEDULES) == 0) {
+    WateringSchedules allSchedules;
+    rtc.getSchedules(allSchedules);
+
+    DynamicJsonDocument doc(1024); // Sufficient size for 10 schedules
+    JsonArray scheduleArray = doc.to<JsonArray>();
+
+    for (int i = 0; i < MAX_SCHEDULES; i++) {
+      JsonObject scheduleObj = scheduleArray.createNestedObject();
+      scheduleObj["index"] = i;
+      scheduleObj["hour"] = allSchedules.items[i].hour;
+      scheduleObj["min"] = allSchedules.items[i].minute;
+      scheduleObj["dur"] = allSchedules.items[i].duration_sec;
+      scheduleObj["dow"] = allSchedules.items[i].daysOfWeek;
+      scheduleObj["en"] = allSchedules.items[i].enabled;
+    }
+
+    char buffer[1024];
+    serializeJson(doc, buffer);
+    mqttClient.publish(GET_ALL_SCHEDULES, buffer);
+
   } else if (strcmp(topic, GET_UPDATE_REQUEST) == 0) {
-    if (atoi(payloadStr)==1){
+    if (atoi(payloadStr) == 1) {
       firmwareUpdate = true;
     }
   } else if (strcmp(topic, RESTART) == 0) {
@@ -193,26 +210,42 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
 }
 
 // Callback for SET_SCHEDULE
-void  onSetScheduleCallback(const char* payload) {
-  WateringSchedule ws;
-  if (parseSchedulePayload(payload, ws)) {
-      if (rtc.setWateringSchedule(&ws)) {
-          Serial.println("Schedule saved successfully.");
-      } else {
-          Serial.println("Failed to save schedule to RAM.");
-      }
-  } else {
-      Serial.println("Invalid schedule format. Expected HH:MM:duration_sec:interval_min");
-  }
+void onSetScheduleCallback(const char* payload) {
+    int index;
+    ScheduleItem newItem;
+    
+    if (parseSchedulePayload(payload, index, newItem)) {
+        WateringSchedules allSchedules;
+        
+        if (!rtc.getSchedules(allSchedules)) {
+            Serial.println("Could not read schedules, initializing new set.");
+            memset(&allSchedules, 0, sizeof(allSchedules));
+        }
+
+        allSchedules.items[index] = newItem;
+
+        if (rtc.setSchedules(allSchedules)) {
+            Serial.printf("Schedule at index %d saved successfully.\n", index);
+        } else {
+            Serial.println("Failed to save schedules to RTC RAM.");
+        }
+    } else {
+        Serial.println("Invalid schedule format. Expected index:HH:MM:duration:daysOfWeek:enabled");
+    }
 }
 
-// Function to parse payload in the format "HH:MM:duration_sec:interval_sec" into a WateringSchedule struct
-bool parseSchedulePayload(const char* payload, WateringSchedule& ws) {
-  int parsed = sscanf(payload, "%2hhu:%2hhu:%4hu:%5hu", &ws.hour, &ws.minute, &ws.duration_sec, &ws.interval_minute);
-  if (parsed == 4) {
-      return true;
-  }
-  return false;
+// It parses the payload for setting a schedule: "index:HH:MM:duration:daysOfWeek:enabled"
+bool parseSchedulePayload(const char* payload, int& index, ScheduleItem& item) {
+    int enabled_int;
+    int parsed = sscanf(payload, "%d:%2hhu:%2hhu:%hu:%hhu:%d", 
+                        &index, &item.hour, &item.minute, 
+                        &item.duration_sec, &item.daysOfWeek, &enabled_int);
+    
+    if (parsed == 6 && index >= 0 && index < MAX_SCHEDULES) {
+        item.enabled = (enabled_int == 1);
+        return true;
+    }
+    return false;
 }
 
 void publishMsg(const char *topic, const char *payload,bool retained){
@@ -244,21 +277,21 @@ void pumpStart(){
   Serial.println("Pump already in running state or upgrade in progress");
 }
 
-void pumpStop(){
+void pumpStop() {
   if (digitalRead(MOSFET_PIN)) {
     Serial.println("Stopping pump");
     digitalWrite(MOSFET_PIN, LOW);
     deviceState.pumpRunning = false;
-    if (mqttClient.connected()) {
-      publishMsg(PUMP_STATUS_TOPIC, "off",true);
-    }
-    if (pendingAlarmUpdate){
-      rtc.setNextAlarm(false);
-      pendingAlarmUpdate = !pendingAlarmUpdate;
-    }
-    return;
+    publishMsg(PUMP_STATUS_TOPIC, "off");
+
+    // Always recalculate the next alarm when the pump stops.
+    // This correctly resumes the schedule after both manual and automatic stops,
+    // and it will apply any schedule updates that were received mid-run.
+    // Recalculate and publish the next due time.
+    updateAndPublishNextAlarm();
+  } else {
+    Serial.println("Pump already in idle state");
   }
-  Serial.println("Pump already in idle state");
 }
 
 void checkForOTAUpdate() {
@@ -319,7 +352,7 @@ void connectNetworkStack() {
     if (mqttClient.connect("beegreen", mqttDetails.mqtt_user, mqttDetails.mqtt_password)) {
       mqttClient.subscribe(PUMP_CONTROL_TOPIC);
       mqttClient.subscribe(SET_SCHEDULE);
-      mqttClient.subscribe(REQUEST_NEXT_SCHEDULE);
+      mqttClient.subscribe(REQUEST_ALL_SCHEDULES);
       mqttClient.subscribe(GET_UPDATE_REQUEST);
       deviceState.radioStatus = ConnectivityStatus::SERVERCONNECTED;
       return;
@@ -335,6 +368,27 @@ void connectNetworkStack() {
 
   if (WiFi.status() != WL_CONNECTED && !wm.getConfigPortalActive() && !digitalRead(MOSFET_PIN)) {
      wm.reboot();
+  }
+}
+
+void updateAndPublishNextAlarm() {
+  // Set the next hardware alarm based on the schedule
+  bool alarmWasSet = rtc.setNextAlarm();
+  
+  if (alarmWasSet) {
+    // Get the time that was just set
+    DateTime nextAlarm = rtc.getNextDueAlarm();
+    
+    char buffer[20];
+    snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d %02d:%02d:%02d",
+             nextAlarm.year(), nextAlarm.month(), nextAlarm.day(),
+             nextAlarm.hour(), nextAlarm.minute(), nextAlarm.second());
+             
+    // Publish the message with the retain flag set to true
+    mqttClient.publish(NEXT_SCHEDULE, buffer, true);
+  } else {
+    // If no alarms are set, publish an empty string to clear the retained message
+    mqttClient.publish(NEXT_SCHEDULE, "", true);
   }
 }
 
@@ -384,8 +438,8 @@ Timer alarmHandler(1000, Timer::SCHEDULER, []() {
 
   if (rtc.alarmTriggered(ALARM::OFFTRIGGER) && digitalRead(MOSFET_PIN)) {
     Serial.println("offAlarm triggered: ");
+    // pumpStop now correctly handles stopping the pump AND setting the next alarm.
     pumpStop();
-    rtc.setNextAlarm();
   }
 });
 

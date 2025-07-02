@@ -16,11 +16,12 @@
 #define PUMP_STATUS_TOPIC "beegreen/pump_status"
 
 #define SET_SCHEDULE "beegreen/set_schedule"
-#define REQUEST_NEXT_SCHEDULE "beegreen/request_schedule"
-#define GET_NEXT_SCHEDULE "beegreen/get_schedule"
 
 #define CURRENT_CONSUMPTION "beegreen/current_consumption"
 #define GET_UPDATE_REQUEST "beegreen/firmware_upgrade"
+#define REQUEST_ALL_SCHEDULES "beegreen/request_schedules"
+#define GET_ALL_SCHEDULES "beegreen/get_schedules_response"
+#define NEXT_SCHEDULE "beegreen/next_schedule_due"
 
 #define RESTART "beegreen/restart"
 
