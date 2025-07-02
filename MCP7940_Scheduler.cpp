@@ -5,7 +5,7 @@
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, NTP_SERVER);
 
-MCP7940Scheduler::MCP7940Scheduler() : timezoneOffset(5.5) {}
+MCP7940Scheduler::MCP7940Scheduler() : timezoneOffset(5.5) , _nextDueAlarm(0){}
 
 void MCP7940Scheduler::begin() {
     rtc.begin();
@@ -32,23 +32,11 @@ float MCP7940Scheduler::getTimeZone() { return timezoneOffset; }
 bool MCP7940Scheduler::updateTimeFromNTP() {
     timeClient.begin();
     if (timeClient.forceUpdate()) {
-        time_t ntpTime = timeClient.getEpochTime() + static_cast<uint16_t>(timezoneOffset * 3600);
+        time_t ntpTime = timeClient.getEpochTime() + static_cast<uint32_t>(timezoneOffset * 3600);
         rtc.adjust(DateTime(ntpTime));
         return true;
     }
     return false;
-}
-
-bool MCP7940Scheduler::setWateringSchedule(WateringSchedule* ws) {
-    return rtc.writeRAM(0x00, *ws);
-}
-
-bool MCP7940Scheduler::getWateringSchedule(WateringSchedule* ws) {
-    return rtc.readRAM(0x00, *ws) > 0;
-}
-
-bool MCP7940Scheduler::alarmTriggered(ALARM alarm) {
-    return rtc.isAlarm(static_cast<uint8_t>(alarm));
 }
 
 String MCP7940Scheduler::getCurrentTimestamp() {
@@ -60,39 +48,106 @@ String MCP7940Scheduler::getCurrentTimestamp() {
     return String(buffer);
 }
 
-bool MCP7940Scheduler::setNextAlarm(bool autoNextInterval) {
+
+bool MCP7940Scheduler::setSchedules(const WateringSchedules& schedules) {
+    return rtc.writeRAM(0, schedules);
+}
+
+bool MCP7940Scheduler::getSchedules(WateringSchedules& schedules) {
+    return rtc.readRAM(0, schedules) > 0;
+}
+
+bool MCP7940Scheduler::setManualStopTime(uint16_t duration_sec) {
+    // This function implements the "Hardware Override" for a manual run.
+    // It directly programs the OFFTRIGGER without touching saved schedules.
     DateTime now = rtc.now();
-    WateringSchedule currentSchedule;
-    getWateringSchedule(&currentSchedule);
+    DateTime offAlarmTime = now + TimeSpan(duration_sec);
 
-    DateTime nextAlarmTime;
-    uint16_t startSeconds = currentSchedule.hour * 3600 + currentSchedule.minute * 60;
-    uint16_t nowSeconds = now.hour() * 3600 + now.minute() * 60 + now.second();
+    // ALARM_TYPE 4 matches on H, M, S for a precise one-time stop
+    if (!rtc.setAlarm(ALARM::OFFTRIGGER, 4, offAlarmTime, true)) {
+        Serial.println("Failed to set manual OFFTRIGGER alarm.");
+        return false;
+    }
+    Serial.println("Manual stop time set.");
+    return true;
+}
 
-    if (autoNextInterval) {
-        uint16_t intervalSeconds = currentSchedule.interval_minute * 60;
-        uint16_t elapsedSinceStart = nowSeconds - startSeconds;
-        uint16_t remainingSeconds = intervalSeconds - (elapsedSinceStart % intervalSeconds);
-        nextAlarmTime = now + TimeSpan(0, 0, remainingSeconds / 60, remainingSeconds % 60);
-    } else {
-        DateTime tomorrow = now + TimeSpan(1, 0, 0, 0);
-        nextAlarmTime = (nowSeconds < startSeconds)
-                            ? DateTime(now.year(), now.month(), now.day(), currentSchedule.hour, currentSchedule.minute, 0)
-                            : DateTime(tomorrow.year(), tomorrow.month(), tomorrow.day(), currentSchedule.hour, currentSchedule.minute, 0);
+bool MCP7940Scheduler::setNextAlarm() {
+    DateTime now = rtc.now();
+    WateringSchedules allSchedules;
+    if (!getSchedules(allSchedules)) {
+        Serial.println("Could not read schedules from RTC RAM. Initializing blank schedule set.");
+        memset(&allSchedules, 0, sizeof(allSchedules));
+    }
+
+    DateTime earliestNextAlarm(0);
+    uint16_t durationForNextAlarm = 0;
+
+    for (int i = 0; i < MAX_SCHEDULES; ++i) {
+        const auto& schedule = allSchedules.items[i];
+        if (!schedule.enabled || schedule.daysOfWeek == 0) {
+            continue;
+        }
+
+        for (int dayOffset = 0; dayOffset < 7; ++dayOffset) {
+            DateTime checkDate = now + TimeSpan(dayOffset, 0, 0, 0);
+            uint8_t dayOfWeek = checkDate.dayOfTheWeek();
+            
+            if ((schedule.daysOfWeek >> (dayOfWeek - 1)) & 1) {
+                DateTime potentialAlarmTime(checkDate.year(), checkDate.month(), checkDate.day(),
+                                            schedule.hour, schedule.minute, 0);
+
+                if (potentialAlarmTime.unixtime() > now.unixtime()) {
+                    if (earliestNextAlarm.unixtime() == 0 || potentialAlarmTime.unixtime() < earliestNextAlarm.unixtime()) {
+                        earliestNextAlarm = potentialAlarmTime;
+                        durationForNextAlarm = schedule.duration_sec;
+                    }
+                    break; 
+                }
+            }
+        }
     }
 
     rtc.clearAlarm(ALARM::ONTRIGGER);
     rtc.clearAlarm(ALARM::OFFTRIGGER);
+    rtc.setAlarmState(ALARM::ONTRIGGER, false);
+    rtc.setAlarmState(ALARM::OFFTRIGGER, false);
 
-    if (!rtc.setAlarm(ALARM::ONTRIGGER, ALARM_TYPE, nextAlarmTime, true)) {
-        Serial.println("Failed to set Alarm 0.");
-        return false;
-    }
-    DateTime secondAlarmTime = nextAlarmTime + TimeSpan(0, 0, currentSchedule.duration_sec / 60, currentSchedule.duration_sec % 60);
-    return rtc.setAlarm(ALARM::OFFTRIGGER, ALARM_TYPE, secondAlarmTime, true);
+    _nextDueAlarm = earliestNextAlarm; // Store the result
+
+    if (earliestNextAlarm.unixtime() > 0) {
+        Serial.printf("Next alarm set for: %04d-%02d-%02d %02d:%02d\n",
+             earliestNextAlarm.year(), earliestNextAlarm.month(), earliestNextAlarm.day(),
+             earliestNextAlarm.hour(), earliestNextAlarm.minute());
+
+        if (!rtc.setAlarm(ALARM::ONTRIGGER, ALARM_TYPE, earliestNextAlarm, true)) {
+            Serial.println("Failed to set ONTRIGGER alarm.");
+            return false;
+        }
+        
+        DateTime offAlarmTime = earliestNextAlarm + TimeSpan(durationForNextAlarm);
+        if (!rtc.setAlarm(ALARM::OFFTRIGGER, ALARM_TYPE, offAlarmTime, true)) {
+            Serial.println("Failed to set OFFTRIGGER alarm.");
+            rtc.setAlarmState(ALARM::ONTRIGGER, false);
+            return false;
+        }
+        return true;
+    } 
+    
+    Serial.println("No future alarms to set.");
+    return false;
+}
+
+bool MCP7940Scheduler::alarmTriggered(ALARM alarm) {
+    return rtc.isAlarm(static_cast<uint8_t>(alarm));
 }
 
 void MCP7940Scheduler::getAlarms(DateTime &onAlarm, DateTime &offAlarm) {
-    onAlarm = rtc.getAlarm(0, ALARM_TYPE);
-    offAlarm = rtc.getAlarm(1, ALARM_TYPE);
+    uint8_t alarmType;
+    onAlarm = rtc.getAlarm(0, alarmType);
+    offAlarm = rtc.getAlarm(1, alarmType);
+}
+
+DateTime MCP7940Scheduler::getNextDueAlarm() const {
+    return _nextDueAlarm;
 }
