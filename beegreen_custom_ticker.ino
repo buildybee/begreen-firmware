@@ -282,7 +282,7 @@ void pumpStop() {
     Serial.println("Stopping pump");
     digitalWrite(MOSFET_PIN, LOW);
     deviceState.pumpRunning = false;
-    publishMsg(PUMP_STATUS_TOPIC, "off");
+    publishMsg(PUMP_STATUS_TOPIC, "off",true);
 
     // Always recalculate the next alarm when the pump stops.
     // This correctly resumes the schedule after both manual and automatic stops,
