@@ -27,7 +27,6 @@ DoubleResetDetect drd(DRD_TIMEOUT, DRD_ADDRESS);
 
 bool picker = false;
 bool resetTrigger = false;
-bool pendingAlarmUpdate= false;
 bool mqttloop,firmwareUpdate,firmwareUpdateOngoing;
 float current  = 0;
 volatile unsigned long lastClickTime = 0;
@@ -78,10 +77,6 @@ void gracefullShutownprep(){
   mqttClient.disconnect();
   wm.disconnect();
   pumpStop();
-  if (pendingAlarmUpdate){
-      rtc.setNextAlarm();
-      pendingAlarmUpdate = !pendingAlarmUpdate;
-  }
   led.setPixelColor(0,LedColor::OFF);
   led.show();
 }
