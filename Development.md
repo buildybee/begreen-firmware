@@ -38,7 +38,7 @@ These are the topics the app must **publish** to in order to control the device.
 * **Example:** To set schedule #1 to run at 8:30 PM for 90 seconds, every day: `"1:20:30:90:127:1"`
 
 ### 3. Request All Schedules
-* **Topic:** `beegreen/request_schedules`
+* **Topic:** `beegreen/get_schedules`
 * **Action:** Asks the device to publish its complete list of all 10 configured schedules.
 * **Payload Format:** Can be empty. The device only acts on receiving a message on this topic.
 
