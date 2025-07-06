@@ -83,52 +83,68 @@ bool MCP7940Scheduler::setNextAlarm() {
     DateTime earliestNextAlarm(0);
     uint16_t durationForNextAlarm = 0;
 
+    // Iterate through all possible schedule slots
     for (int i = 0; i < MAX_SCHEDULES; ++i) {
         const auto& schedule = allSchedules.items[i];
         if (!schedule.enabled || schedule.daysOfWeek == 0) {
-            continue;
+            continue; // Skip disabled or empty schedules
         }
 
+        // Check the next 7 days to find the earliest future occurrence for this schedule
         for (int dayOffset = 0; dayOffset < 7; ++dayOffset) {
             DateTime checkDate = now + TimeSpan(dayOffset, 0, 0, 0);
-            uint8_t dayOfWeek = checkDate.dayOfTheWeek();
             
-            if ((schedule.daysOfWeek >> (dayOfWeek - 1)) & 1) {
+            // The library returns 1 for Monday, ..., 7 for Sunday.
+            // Our bitmask needs 0 for Sunday, 1 for Monday, etc.
+            // The `dayOfWeek % 7` trick correctly maps 7 (Sun) -> 0, 1 (Mon) -> 1, etc.
+            uint8_t dayOfWeek = checkDate.dayOfTheWeek();
+            uint8_t bitIndex = dayOfWeek % 7;
+
+            // Check if the schedule is set to run on this day of the week
+            if ((schedule.daysOfWeek >> bitIndex) & 1) {
                 DateTime potentialAlarmTime(checkDate.year(), checkDate.month(), checkDate.day(),
                                             schedule.hour, schedule.minute, 0);
-
+                
+                // If this potential time is in the future...
                 if (potentialAlarmTime.unixtime() > now.unixtime()) {
+                    // ...and it's the first one we've found, or it's earlier than the one we already have...
                     if (earliestNextAlarm.unixtime() == 0 || potentialAlarmTime.unixtime() < earliestNextAlarm.unixtime()) {
+                        // ...then this is our new best candidate for the next alarm.
                         earliestNextAlarm = potentialAlarmTime;
                         durationForNextAlarm = schedule.duration_sec;
                     }
+                    // IMPORTANT: We found the soonest possible time for this schedule,
+                    // so we can stop checking future days for this specific schedule and move to the next.
                     break; 
                 }
             }
         }
     }
 
+    // Clear any previous hardware alarms before setting new ones
     rtc.clearAlarm(ALARM::ONTRIGGER);
     rtc.clearAlarm(ALARM::OFFTRIGGER);
     rtc.setAlarmState(ALARM::ONTRIGGER, false);
     rtc.setAlarmState(ALARM::OFFTRIGGER, false);
 
-    _nextDueAlarm = earliestNextAlarm; // Store the result
+    _nextDueAlarm = earliestNextAlarm; // Store the final result
 
     if (earliestNextAlarm.unixtime() > 0) {
-        Serial.printf("Next alarm set for: %04d-%02d-%02d %02d:%02d\n",
-             earliestNextAlarm.year(), earliestNextAlarm.month(), earliestNextAlarm.day(),
-             earliestNextAlarm.hour(), earliestNextAlarm.minute());
+        Serial.printf("Next alarm set for: %04d-%02d-%02d %02d:%02d:%02d\n",
+                      earliestNextAlarm.year(), earliestNextAlarm.month(), earliestNextAlarm.day(),
+                      earliestNextAlarm.hour(), earliestNextAlarm.minute(), earliestNextAlarm.second());
 
+        // Set the hardware alarm to turn the pump ON
         if (!rtc.setAlarm(ALARM::ONTRIGGER, ALARM_TYPE, earliestNextAlarm, true)) {
             Serial.println("Failed to set ONTRIGGER alarm.");
             return false;
         }
         
+        // Calculate the stop time and set the hardware alarm to turn the pump OFF
         DateTime offAlarmTime = earliestNextAlarm + TimeSpan(durationForNextAlarm);
         if (!rtc.setAlarm(ALARM::OFFTRIGGER, ALARM_TYPE, offAlarmTime, true)) {
             Serial.println("Failed to set OFFTRIGGER alarm.");
-            rtc.setAlarmState(ALARM::ONTRIGGER, false);
+            rtc.setAlarmState(ALARM::ONTRIGGER, false); // Rollback the ON alarm
             return false;
         }
         return true;
