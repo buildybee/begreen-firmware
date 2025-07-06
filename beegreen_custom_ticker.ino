@@ -520,9 +520,7 @@ void setup() {
   led.begin();
   led.clear();
   
-   // Turn off mosfet
-  
-  attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), buttonISR, FALLING);
+  attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), buttonISR, RISING);
 
   rtc.begin();
 
@@ -553,17 +551,42 @@ void loop() {
   }
   mqttClient.loop();
   
-   // Reset clickCount if no follow-up click occurs within CLICK_RESET_TIMEOUT
-  if (clickCount > 0 && millis() - lastClickTime >= DOUBLE_CLICK_WINDOW+50) {
-    clickCount = 0; // Force reset
-  }
+ if (clickCount > 0) {
+  // Safely read the volatile variables by temporarily disabling interrupts
+  noInterrupts();
+  uint8_t clicks = clickCount;
+  unsigned long timeOfClick = lastClickTime;
+  interrupts();
 
-  // Handle double-click (only if 2+ clicks within DOUBLE_CLICK_GAP)
-  if (clickCount >= 2) {
-    clickCount = 0; // Reset after action
-    if (!digitalRead(MOSFET_PIN)) pumpStart();
-    else pumpStop();
+  // If two or more clicks are counted, it's a double-click.
+  if (clicks >= 2) {
+   Serial.println("Double-click detected, toggling pump.");
+   if (!digitalRead(MOSFET_PIN)) {
+        pumpStart();
+      } else {
+        pumpStop();
+      }
+
+   // Reset the count immediately so the action doesn't fire again.
+   noInterrupts();
+   clickCount = 0;
+   interrupts();
+
+  } else if (clicks == 1) {
+   // If only one click is registered, wait to see if a second one arrives.
+   if (millis() - timeOfClick > DOUBLE_CLICK_WINDOW) {
+    // The double-click window has expired. It was just a single click.
+    // Reset the counter
+    noInterrupts();
+        // As a final check, only reset if the count is still 1. This prevents a race condition
+        // where a second click could occur right before this reset.
+        if (clickCount == 1) {
+          clickCount = 0;
+        }
+    interrupts();
+   }
   }
+ }
 
   if(mqttloop) {
     connectNetworkStack();
