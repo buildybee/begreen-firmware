@@ -175,23 +175,52 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
     WateringSchedules allSchedules;
     rtc.getSchedules(allSchedules);
 
-    DynamicJsonDocument doc(1024); // Sufficient size for 10 schedules
+    // This JSON document is for building the array. 512 bytes is a safe size.
+    DynamicJsonDocument doc(512);
     JsonArray scheduleArray = doc.to<JsonArray>();
 
+    // A small buffer to build each schedule string (max 18 bytes needed)
+    char schedule_string[20]; 
+    bool schedulesModified = false;
+
     for (int i = 0; i < MAX_SCHEDULES; i++) {
-      JsonObject scheduleObj = scheduleArray.createNestedObject();
-      scheduleObj["index"] = i;
-      scheduleObj["hour"] = allSchedules.items[i].hour;
-      scheduleObj["min"] = allSchedules.items[i].minute;
-      scheduleObj["dur"] = allSchedules.items[i].duration_sec;
-      scheduleObj["dow"] = allSchedules.items[i].daysOfWeek;
-      scheduleObj["en"] = allSchedules.items[i].enabled;
+        auto& item = allSchedules.items[i];
+
+        // 1. Validate and fix any corrupt data in RTC memory
+        if (item.hour > 23 || item.minute > 59 || item.daysOfWeek > 127) {
+            item.hour = 0;
+            item.minute = 0;
+            item.duration_sec = 0;
+            item.daysOfWeek = 0;
+            item.enabled = false;
+            schedulesModified = true;
+        }
+
+        // 2. Add only valid AND enabled schedules to our response array
+        if (item.enabled) {
+            // Format: index:hour:minute:duration:daysOfWeek
+            snprintf(schedule_string, sizeof(schedule_string), "%d:%d:%d:%u:%d",
+                     i,
+                     item.hour,
+                     item.minute,
+                     item.duration_sec,
+                     item.daysOfWeek);
+            
+            scheduleArray.add(schedule_string);
+        }
     }
 
-    char buffer[1024];
-    serializeJson(doc, buffer);
-    mqttClient.publish(GET_ALL_SCHEDULES, buffer);
+    // 3. If data was fixed, write the clean version back to the RTC
+    if (schedulesModified) {
+        Serial.println("Found and fixed corrupt schedule data in RTC RAM.");
+        rtc.setSchedules(allSchedules);
+    }
 
+    // 4. Serialize the final JSON array into a single buffer and publish
+    char payload_buffer[256]; // Safely fits the max possible payload (~202 bytes)
+    serializeJson(doc, payload_buffer, sizeof(payload_buffer));
+    
+    mqttClient.publish(GET_ALL_SCHEDULES, payload_buffer);
   } else if (strcmp(topic, GET_UPDATE_REQUEST) == 0) {
     if (atoi(payloadStr) == 1) {
       firmwareUpdate = true;

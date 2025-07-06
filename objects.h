@@ -19,7 +19,7 @@
 
 #define CURRENT_CONSUMPTION "beegreen/current_consumption"
 #define GET_UPDATE_REQUEST "beegreen/firmware_upgrade"
-#define REQUEST_ALL_SCHEDULES "beegreen/request_schedules"
+#define REQUEST_ALL_SCHEDULES "beegreen/get_schedules"
 #define GET_ALL_SCHEDULES "beegreen/get_schedules_response"
 #define NEXT_SCHEDULE "beegreen/next_schedule_due"
 
