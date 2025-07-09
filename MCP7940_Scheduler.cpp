@@ -60,6 +60,12 @@ bool MCP7940Scheduler::getSchedules(WateringSchedules& schedules) {
 bool MCP7940Scheduler::setManualStopTime(uint16_t duration_sec) {
     // This function implements the "Hardware Override" for a manual run.
     // It directly programs the OFFTRIGGER without touching saved schedules.
+    
+    // CRITICAL FIX: Clear any pre-existing alarm flag before setting a new one.
+    // This prevents a race condition where a stale flag from a previous (or empty)
+    // schedule could cause an immediate trigger.
+    rtc.clearAlarm(ALARM::OFFTRIGGER);
+    
     DateTime now = rtc.now();
     DateTime offAlarmTime = now + TimeSpan(duration_sec);
 
