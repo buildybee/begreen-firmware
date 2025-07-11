@@ -64,13 +64,14 @@ bool MCP7940Scheduler::setManualStopTime(uint16_t duration_sec) {
     // CRITICAL FIX: Clear any pre-existing alarm flag before setting a new one.
     // This prevents a race condition where a stale flag from a previous (or empty)
     // schedule could cause an immediate trigger.
+    rtc.setAlarmState(ALARM::OFFTRIGGER, false);
     rtc.clearAlarm(ALARM::OFFTRIGGER);
     
     DateTime now = rtc.now();
     DateTime offAlarmTime = now + TimeSpan(duration_sec);
 
-    // ALARM_TYPE 4 matches on H, M, S for a precise one-time stop
-    if (!rtc.setAlarm(ALARM::OFFTRIGGER, 4, offAlarmTime, true)) {
+    
+    if (!rtc.setAlarm(ALARM::OFFTRIGGER, ALARM_TYPE, offAlarmTime, true)) {
         Serial.println("Failed to set manual OFFTRIGGER alarm.");
         return false;
     }
