@@ -9,6 +9,12 @@ MCP7940Scheduler::MCP7940Scheduler() : timezoneOffset(5.5) , _nextDueAlarm(0){}
 
 void MCP7940Scheduler::begin() {
     rtc.begin();
+    
+    // ENABLE BATTERY BACKUP - Critical for retaining time/data during power failure
+    rtc.setBattery(true);
+    Serial.println("Battery backup enabled (VBATEN set)");
+    Serial.println(rtc.getBattery() ? "Battery backup: ON" : "Battery backup: OFF");
+    
     while (!rtc.deviceStatus()) {
         Serial.println(F("Oscillator is off, turning it on."));
         if (!rtc.deviceStart()) {

@@ -226,6 +226,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
       firmwareUpdate = true;
     }
   } else if (strcmp(topic, RESTART) == 0) {
+    gracefullShutownprep();
     ESP.restart();
   }
    else {
@@ -378,6 +379,7 @@ void connectNetworkStack() {
       mqttClient.subscribe(SET_SCHEDULE);
       mqttClient.subscribe(REQUEST_ALL_SCHEDULES);
       mqttClient.subscribe(GET_UPDATE_REQUEST);
+      mqttClient.subscribe(RESTART);
       deviceState.radioStatus = ConnectivityStatus::SERVERCONNECTED;
       return;
     }
